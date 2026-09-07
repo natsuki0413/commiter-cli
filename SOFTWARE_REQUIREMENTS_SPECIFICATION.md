@@ -44,7 +44,9 @@ v1 では Windows と Linux、GUI、クラウド LLM、llama.cpp backend、Homeb
 
 **機密候補**：名前や配置から機密を含む可能性があるものの、通常の設定ファイルである可能性も残る path です。内容を読む前に利用者確認を必要とします。
 
-**検証 trust**：特定のリポジトリで、特定の設定または manifest のハッシュと実行予定 argv を承認済みとして保存した状態です。
+**verification definition**：commiter が実際に起動する検証処理の意味を表す正規化対象です。source type、実行順の command 一覧、および各 command の name、repo root 相対の正規化済み cwd、完全な argv を含みます。`package.json` 自動検出では、これに manifest path、script name、script body の完全な文字列を加えます。
+
+**検証 trust**：特定の canonical repo path に対して、verification definition の SHA-256 を利用者が承認済みとして保存した状態です。trust は検証コマンド定義の承認であり、検証から間接的に実行される source、dependency、lockfile その他のコード内容の安全性を保証するものではありません。
 
 ## 5. 前提と制約
 
@@ -264,13 +266,13 @@ setup は Homebrew 自体を導入してはなりません。
 
 `config init` は global または repo の初期設定ファイルを生成し、`config show` は有効値と出所を表示し、`config path` は各設定ファイルの絶対パスを表示しなければなりません。
 
-`trust list` は保存済み trust の repo path、hash、argv を表示し、`trust revoke` は指定 trust を削除しなければなりません。
+`trust list` は保存済み trust の canonical repo path、verification definition hash、source type、argv を表示し、`trust revoke` は指定 trust を削除しなければなりません。
 
 設定の優先順位は CLI、repo、global、内蔵既定値の順とし、安全設定は global または明示 CLI だけで変更可能にしなければなりません。
 
 repo 設定に安全設定の禁止 key が含まれる場合、CLI は設定エラーとして停止しなければなりません。
 
-trust の対象 hash が変化した場合、CLI は再承認を要求しなければなりません。
+現在の verification definition hash が保存済み trust hash と一致しない場合、CLI は検証を実行する前に再承認を要求しなければなりません。
 
 ### FR-022 確認の既定値
 
@@ -327,15 +329,29 @@ commit message は通常 `type(scope): summary`、破壊的変更は `type(scope
 
 ## 11. 検証 trust
 
-repo 設定を最優先し、設定がない場合は trust 済み `package.json` に実在する `lint`、`typecheck`、`test`、`build` script だけを安全に検出します。
+repo 設定を最優先し、設定がない場合は `package.json` に実在する `lint`、`typecheck`、`test`、`build` script だけを安全に自動検出します。
 
 Go、Rust、Python の標準コマンドは自動推測せず、repo 設定の argv 配列で明示します。
 
-初回実行時または設定、manifest、argv の hash が変化した場合は、実行予定 argv、cwd、source hash を表示して承認を求めます。
+CLI は検証実行前に現在の verification definition を決定し、その正規化表現の SHA-256 を trust hash として計算しなければなりません。verification definition は次を含みます。
 
-trust は canonical repo path、設定または manifest の SHA-256、実行予定 argv と紐付けて保存します。
+- schema version `1`
+- source type（`repo_config` または `package_json_autodetect`）
+- 実行順を保持した command 一覧
+- 各 command の `name`
+- repo root 相対へ正規化した `cwd`
+- 引数境界と順序を保持した完全な `argv`
+- `package_json_autodetect` の場合だけ、manifest path、script name、script body の完全な文字列
 
-検証コマンドがない場合は `Verification: none` と表示し、追加確認なしで続行します。
+正規化表現は UTF-8 の canonical JSON とし、object key 順序を固定し、不要な空白を含めず、command と argv の配列順序を保持します。trust hash はこの byte 列の SHA-256 とします。canonical repo path は hash へ含めず、trust record の scope key として別に保存します。
+
+repo 設定由来では `.commiter.toml` 全体を hash してはならず、verification definition に採用された command 定義だけを hash 対象とします。`package.json` 自動検出では manifest 全体を hash してはならず、採用した script の manifest path、script name、script body だけを hash 対象とします。
+
+source file、Git HEAD、lockfile、dependency content、verification と無関係な manifest script、model、commit、analysis その他の設定は trust hash に含めてはなりません。ただし package manager の解決結果などが変わって最終 argv が変化した場合は、argv の変化として trust hash が変化しなければなりません。
+
+初回実行、trust record 不在、または現在の verification definition hash が保存済み hash と異なる場合、CLI は source type、実行予定 command の name、argv、cwd、自動検出時の script name と script body、現在の trust hash を表示し、検証実行前に承認を求めなければなりません。
+
+hash が一致する場合は再承認を要求せず、同じ verification definition を実行できます。検証コマンドがない場合は `Verification: none` と表示し、trust record の作成や追加確認なしで続行します。
 
 ## 12. セキュリティと安全要件
 
@@ -504,7 +520,13 @@ source、test、docs、依存変更、機械的変更を含む差分で、LLM �
 
 ### AC-008 検証 trust
 
-設定または package.json の script、argv、hash が初回と変更後に再承認を要求し、検証なしの場合は `Verification: none` と表示されることを確認します。
+初回または trust record 不在では承認が要求され、同一 verification definition の再実行では再承認されないことを確認します。
+
+repo 設定由来では command の name、cwd、argv、command 順序の変更で trust hash が変化し、verification と無関係な `.commiter.toml` の設定変更では変化しないことを確認します。
+
+`package.json` 自動検出では採用 script の script name または script body、manifest path、最終 argv、command 順序の変更で trust hash が変化し、採用されていない script やその他の manifest field、lockfile、source file、Git HEAD、dependency content の変更だけでは変化しないことを確認します。
+
+hash 変化時は source type、argv、cwd、自動検出時の script name と script body、現在の trust hash を表示して再承認を要求し、検証なしの場合は `Verification: none` と表示して trust を作成しないことを確認します。
 
 ### AC-009 commit と hook
 
@@ -538,7 +560,7 @@ Ollama daemon の停止中、起動済み、モデル未取得、更新可能の
 
 ### AC-016 設定と trust コマンド
 
-`config init --global`、`config init --repo`、`config show --effective`、`config path --global`、`config path --repo`、`trust list`、`trust revoke <repo>` の出力と状態変更を確認し、設定 hash の変化で再承認されることを確認します。
+`config init --global`、`config init --repo`、`config show --effective`、`config path --global`、`config path --repo`、`trust list`、`trust revoke <repo>` の出力と状態変更を確認します。`trust list` が canonical repo path、verification definition hash、source type、argv を表示し、`trust revoke <repo>` 後の次回検証で再承認されることを確認します。
 
 ### AC-017 JSON 制約と割当
 
