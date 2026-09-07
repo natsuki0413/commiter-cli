@@ -34,7 +34,7 @@ v1 では Windows と Linux、GUI、クラウド LLM、llama.cpp backend、Homeb
 
 **pathspec**：Git が解釈する相対パスまたはパスパターンです。
 
-**対象変更**：pathspec、Git status、未追跡ファイルの安全判定で採用された変更です。
+**対象変更**：pathspec、Git status、未追跡ファイルの安全判定で採用されたファイル単位の変更です。tracked file は既存の staged / unstaged の境界を対象選択には使用せず、HEAD から working tree の最終状態までの変更全体を対象とします。
 
 **コミット計画**：対象変更を複数の commit に割り当て、各 commit のメッセージを定めた JSON です。
 
@@ -53,8 +53,8 @@ v1 の対象 OS は macOS 14 以降、対象アーキテクチャは Apple Silic
 ## 6. 通常フロー
 
 1. CLI は Git リポジトリの状態、HEAD、branch、index lock、merge、rebase、cherry-pick、revert、conflict、detached HEAD を確認します。
-2. CLI は NUL 区切りの Git status から path 一覧を取得します。
-3. CLI は pathspec を適用し、ignored を除外し、symlink はリンク先へ追従せず Git が追跡するリンク情報として対象化し、submodule は親 repo の pointer 更新だけを対象化します。
+2. CLI は NUL 区切りの Git status から path 一覧と staged / unstaged の状態を取得します。stage 状態は診断と保護のための metadata とし、対象選択の境界には使用しません。
+3. CLI は pathspec を適用し、ignored を除外し、tracked file は HEAD から working tree の最終状態までをファイル単位で対象化します。partial stage を含む staged / unstaged 混在ファイルもファイル全体を対象とします。symlink はリンク先へ追従せず Git が追跡するリンク情報として対象化し、submodule は親 repo の pointer 更新だけを対象化します。
 4. CLI は機密候補を内容より先に検出し、承認された候補だけをローカル分析へ渡します。
 5. CLI は変更をファイル、hunk、言語、サイズ、binary 判定、関連 test、import 差分、hash に整理します。
 6. CLI は 8K、16K、32K の順で LLM 入力を作成し、超過時は階層要約を実行します。
@@ -73,7 +73,7 @@ v1 の対象 OS は macOS 14 以降、対象アーキテクチャは Apple Silic
 commiter [flags] [--] [pathspec...]
 ```
 
-引数なしでは staged、unstaged、安全判定済み未追跡の全変更を対象にします。
+引数なしでは stage 状態にかかわらず、tracked file の HEAD から working tree までの全変更と、安全判定済み未追跡ファイルを対象にします。
 
 pathspec を指定した場合は Git pathspec で対象を限定します。
 
@@ -154,7 +154,7 @@ CLI は開始前に対象リポジトリの root、HEAD、branch、index lock、
 
 ### FR-002 変更範囲の確定
 
-CLI は staged、unstaged、未追跡を別々に取得し、pathspec がある場合は Git pathspec を適用しなければなりません。
+CLI は staged、unstaged、未追跡を別々に取得して状態を把握し、pathspec がある場合は Git pathspec を適用しなければなりません。tracked file の staged / unstaged 境界は対象選択には使用せず、対象となった tracked file は HEAD から working tree の最終状態までの変更全体を一つのファイル変更として扱わなければなりません。
 
 ### FR-003 ファイル分類
 
@@ -186,7 +186,7 @@ JSON schema 違反時はエラー内容を添えて一度だけ自動修復推�
 
 ### FR-010 ファイル単位の分割
 
-CLI は同一ファイルを複数 commit へ割り当てず、source と対応 test、依存関係、docs、機械的変更を目的単位にまとめなければなりません。
+CLI は同一ファイルを複数 commit へ割り当てず、source と対応 test、依存関係、docs、機械的変更を目的単位にまとめなければなりません。対象ファイルに staged / unstaged が混在する場合も hunk 単位には分割せず、そのファイルの変更全体を同一 commit に含めなければなりません。
 
 ### FR-011 計画の確認
 
@@ -204,7 +204,7 @@ repo 設定の検証コマンドは argv 配列で指定しなければなりま
 
 ### FR-013 commit の実行
 
-CLI は計画順に明示的なファイル集合を stage し、Git hook と署名設定を尊重して commit を作成しなければなりません。
+CLI は計画順に明示的なファイル集合の working tree 最終状態を stage し、Git hook と署名設定を尊重して commit を作成しなければなりません。対象ファイルに開始時の partial stage が存在しても、その staged 選択は保持せず、対象ファイル全体の変更として commit に含めなければなりません。対象外ファイルの staged 状態は変更してはなりません。
 
 ### FR-014 push の実行
 
@@ -343,11 +343,13 @@ CLI は機密候補の内容を読む前に path と検出理由を表示し、�
 
 機密候補を含む commit の push は auto push 設定に関係なく、push 直前に手動確認を要求しなければなりません。
 
-### SR-006 stage 復元
+### SR-006 stage 保護と復元
 
-pathspec 実行で範囲外 staged 変更を隔離した場合、成功、失敗、拒否、再生成、割込みのすべてで開始時の stage 内容と選択状態を復元しなければなりません。
+対象外ファイルの staged 内容と選択状態は、成功、失敗、拒否、再生成、割込みのすべてで開始時の状態を保持または復元しなければなりません。
 
-復元を確認できない場合は push を禁止し、回復情報を表示しなければなりません。
+対象ファイルの staged / unstaged 境界は対象選択として保持せず、commit 成功時はファイル全体の変更へ吸収されたものとします。commit 開始前に失敗、中止、拒否、再生成、割込みが発生した場合は、対象ファイルを含む index を開始時の状態へ復元しなければなりません。
+
+一つ以上の commit 作成後に失敗または割込みが発生した場合、作成済み commit は rollback せず、対象外 staged 状態を復元し、未完了対象と回復情報を表示しなければなりません。復元を確認できない場合は push を禁止しなければなりません。
 
 ### SR-007 Git 保護
 
@@ -415,7 +417,7 @@ v1 では数値性能ゲートを設けず、M3 と 16GB の環境で区間別�
 
 ## 14. 障害時の動作
 
-LLM が利用できない、model 未導入、API 互換性診断失敗、timeout、schema 検証失敗、検証失敗、stage 復元失敗の場合は commit と push を開始しません。
+LLM が利用できない、model 未導入、API 互換性診断失敗、timeout、schema 検証失敗、検証失敗、commit 開始前の stage 復元失敗の場合は commit と push を開始しません。
 
 commit の途中で失敗した場合は既に作成した commit を reset せず、hash、未完了の計画、push 未実行を報告します。
 
@@ -448,9 +450,9 @@ Ctrl-C を受けた場合は、実行中処理を停止し、stage の復元結�
 
 staged、unstaged、未追跡を混在させた一時 Git repo で、引数なし実行が安全判定済みの対象だけを収集し、pathspec 実行が範囲を限定することを確認します。
 
-### AC-002 stage 復元
+### AC-002 stage の扱い
 
-partial stage と path 外 staged 変更を用意し、成功、検証失敗、利用者中止、Ctrl-C の各経路で開始時の stage 内容と選択状態が一致することを確認します。
+partial stage と path 外 staged 変更を用意し、対象ファイルでは staged / unstaged の両方がファイル全体の変更として同一 commit に含まれることを確認します。対象外ファイルの staged 内容と選択状態は成功時にも維持され、commit 開始前の検証失敗、利用者中止、Ctrl-C では対象ファイルを含む index が開始時の状態へ復元されることを確認します。commit 作成後の失敗または Ctrl-C では作成済み commit を rollback せず、対象外 staged 状態が復元されることを確認します。
 
 ### AC-003 パス種別
 
