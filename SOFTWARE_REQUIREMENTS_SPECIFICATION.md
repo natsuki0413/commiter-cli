@@ -74,7 +74,7 @@ v1 の対象 OS は macOS 14 以降、対象アーキテクチャは Apple Silic
 8. CLI は全計画と除外一覧を表示し、`Create these N commits? [y/r/N]` を一度だけ提示します。
 9. 利用者が承認した場合だけ、承認済み verification definition に基づく検証を作業ツリー全体へ一度実行します。
 10. verification 後、commit 開始直前に CLI は HEAD、対象変更の change_hash、index、および対象 untracked 集合を再検証します。ignored output だけの変化は許容します。tracked working tree、index、または対象 untracked 集合が変化した場合は commit と push を開始せず、verification が生成した working tree の変更は残したまま index を開始時状態へ復元し、変更 path を表示して `Re-analyze changed state? [y/N]` を提示します。利用者が `y` を選んだ場合は現在の Git 状態から手順 1 へ戻り、拒否した場合は exit 4 とします。
-11. 再検証が一致した場合だけ、CLI はファイル単位の commit を計画順に作成します。各 commit はその commit に割り当てられた file ID の変更だけを含みます。
+11. 再検証が一致した場合だけ、CLI はファイル単位の commit を計画順に作成します。各 commit の stage 直前に、その commit へ割り当てられた未処理 file ID の current change_hash が分析時 snapshot と一致することを再確認します。Git hook は通常の Git operation の一部として原則許容し、割当済み file ID に対応する path の内容を hook が変更すること自体は許容します。commit 作成後は parent との差分に現れる file set が当該 commit の割当 file ID と正確に一致することを検証し、割当外 file の混入または割当 file の欠落があれば後続 commit と push を停止します。
 12. 全 commit 成功後、実際に解決した `<remote>/<branch>` を表示し、通常は `Push to <remote>/<branch>? [y/N]` を提示します。通常の Git push semantics に従い、今回の実行前から存在した outgoing commit も push 対象に含まれ得ます。
 13. push 成功後、区間別 metrics と作成した commit hash を表示します。
 
@@ -114,7 +114,9 @@ metrics の永続化は既定で無効とし、明示設定または `--record-m
 
 commit 確認、auto push、機密判定への追加 pattern、Ollama endpoint は global 設定または明示 CLI だけで変更可能にします。対象外 staged 内容と選択状態の保護は v1 の変更不能 invariant とし、設定または CLI で無効化できません。
 
-検証コマンド、glob、言語、モデル、分類補助設定は repo 設定で上書き可能にします。
+verification 全体は repo-scoped とし、verification command、autodetect、timeout は repo 設定だけで指定可能にします。global 設定から verification を指定してはなりません。
+
+glob、言語、モデル、分類補助設定は repo 設定で上書き可能にします。
 
 repo 設定から安全設定を変更する場合は無視して実行せず、設定エラーとして停止します。
 
@@ -136,13 +138,15 @@ repo 設定から安全設定を変更する場合は無視して実行せず、
 | `analysis.untracked` | string | `"auto-safe"` | global |
 | `analysis.include` | string array | `[]` | global、repo |
 | `analysis.exclude` | string array | `[]` | global、repo |
-| `verification.autodetect` | boolean | `true` | global、repo |
-| `verification.timeout_seconds` | integer | `600` | global、repo |
-| `verification.commands` | table array | `[]` | global、repo |
+| `verification.autodetect` | boolean | `true` | repo |
+| `verification.timeout_seconds` | integer | `600` | repo |
+| `verification.commands` | table array | unset | repo |
 | `metrics.persist` | boolean | `false` | global、CLI |
 | `safety.additional_sensitive_patterns` | string array | `[]` | global |
 
-`verification.commands` の各要素は `name`、`argv`（string array）、`cwd`（string）を必須フィールドとします。`verification.commands` key が global または repo 設定に明示された場合は、空配列を含めて自動検出より優先します。
+`verification.commands` の各要素は `name`、`argv`（string array）、`cwd`（string）を必須フィールドとします。`verification.commands` は repo 設定でのみ指定でき、1件以上の command を含まなければなりません。空配列は設定エラーとします。
+
+`verification.commands` が repo 設定で明示されている場合はその command 一覧を使用します。未指定の場合だけ `verification.autodetect` を評価し、true なら repo root の `package.json` から自動検出し、false なら `Verification: none` とします。
 
 `llm.context` の許容値は `"auto"`、`"8k"`、`"16k"`、`"32k"` とします。
 
@@ -158,7 +162,7 @@ repo 設定から安全設定を変更する場合は無視して実行せず、
 
 `provider = "ollama"`、`think = false`、`stream = false`、`keep_alive = 0` は v1 の固定値とし、設定で緩和できないものとします。
 
-未知 key、未対応 `schema_version`、型不一致、repo 設定で禁止された key は exit 2 とします。
+未知 key、未対応 `schema_version`、型不一致、または schema の許可元と異なる設定ファイルに記述された key は exit 2 とします。したがって global 設定内の `verification.*` は設定エラーとして拒否します。
 
 ## 9. 機能要件
 
@@ -234,7 +238,11 @@ CLI は全 commit の順序、メッセージ、割当ファイル、除外フ�
 
 CLI は計画承認後、commit 前に検証コマンドを作業ツリー全体へ一度だけ実行しなければなりません。
 
-`verification.commands` が global または repo 設定に明示されている場合は、その値を使用しなければなりません。明示された空配列は `Verification: none` を意味します。`verification.commands` がどこにも明示されておらず、effective な `verification.autodetect` が true の場合だけ自動検出を行います。
+verification configuration は repo-scoped とし、`verification.commands`、`verification.autodetect`、`verification.timeout_seconds` を global 設定から指定してはなりません。
+
+repo 設定に `verification.commands` が明示されている場合は、その command 一覧を使用しなければなりません。`verification.commands` は1件以上を必須とし、明示された空配列は設定エラーとして exit 2 にしなければなりません。
+
+`verification.commands` が未指定の場合だけ effective な `verification.autodetect` を評価します。`verification.autodetect=true` の場合は自動検出を行い、false の場合は `Verification: none` として検証を実行しません。
 
 v1 の自動検出対象 manifest は repo root の `package.json` 一つだけとし、そこに実在する `lint`、`typecheck`、`test`、`build` script だけをこの順序で候補化します。package manager が repo root の情報から一意に定まらない場合は自動実行してはなりません。Go、Rust、Python の標準コマンドは自動推測しません。
 
@@ -242,7 +250,7 @@ repo 設定の検証コマンドは shell string ではなく argv 配列で指�
 
 CLI は verification 前後で Git-visible state を比較し、ignored output だけの生成または変更は許容します。tracked working tree、index、または対象 untracked 集合の変化は verification mutation として扱わなければなりません。
 
-verification 完了後かつ commit 開始直前に、CLI は HEAD と全対象変更の change_hash を再計算し、分析時 snapshot と一致することを確認しなければなりません。verification mutation または snapshot 不一致を検出した場合は commit と push を開始せず、working tree の変更を残し、index を実行開始時状態へ復元し、変更 path を表示して `Re-analyze changed state? [y/N]` を提示しなければなりません。`y` の場合は現在の状態から分析をやり直し、拒否した場合は exit 4 とします。
+verification 完了後かつ commit 列の開始直前に、CLI は HEAD と全対象変更の change_hash を再計算し、分析時 snapshot と一致することを確認しなければなりません。verification mutation または snapshot 不一致を検出した場合は commit と push を開始せず、working tree の変更を残し、index を実行開始時状態へ復元し、変更 path を表示して `Re-analyze changed state? [y/N]` を提示しなければなりません。`y` の場合は現在の状態から分析をやり直し、拒否した場合は exit 4 とします。
 
 ### FR-013 commit の実行
 
@@ -250,7 +258,13 @@ CLI は計画順に明示的なファイル集合の working tree 最終状態�
 
 対象外ファイルの staged 内容と選択状態の保護は v1 の変更不能 invariant とし、設定や CLI によって無効化できません。
 
-各作成 commit の parent との差分は、その commit に割り当てられた file ID に対応する変更だけを含まなければなりません。対象外 staged 変更や別 commit に割り当てられた変更を混入させてはなりません。
+各 commit の stage 直前に、当該 commit へ割り当てられた未処理 file ID の current change_hash を再計算し、分析時 snapshot と一致することを確認しなければなりません。不一致の場合は当該 commit を開始せず、後続 commit と push を停止して安全条件違反として扱わなければなりません。これにより、先行 commit の hook、IDE、外部プロセス等が後続 commit 対象を変更した場合も未分析内容を stage してはなりません。
+
+Git hook は通常の Git operation の一部として原則許容します。hook が当該 commit に割り当てられた file ID に対応する path の内容または index 上の内容を変更すること自体は、commiter 固有の invariant を破らない限り許容します。hook の変更後に元の change_hash と一致することは要求しません。
+
+各作成 commit の parent との差分に現れる file set は、その commit に割り当てられた file ID に対応する file set と正確に一致しなければなりません。hook その他の処理によって対象外 staged 変更または別 commit に割り当てられた file が混入した場合、あるいは割当 file が commit から欠落した場合は commiter 固有の security invariant 違反とします。
+
+commit 作成後にこの invariant 違反を検出した場合、作成済み commit を自動 rollback せず、違反 path を表示し、後続 commit と push を禁止して exit 7 としなければなりません。
 
 ### FR-014 push の実行
 
@@ -300,7 +314,7 @@ setup は Homebrew 自体を導入してはなりません。
 
 `trust list` は保存済み trust の canonical repo path、verification definition hash、source type、argv を表示し、`trust revoke` は指定 trust を削除しなければなりません。
 
-設定の優先順位は CLI、repo、global、内蔵既定値の順とし、安全設定は global または明示 CLI だけで変更可能にしなければなりません。ただし対象外 staged 内容と選択状態の保護、および明確な機密ファイルの常時除外は v1 の変更不能 invariant とし、どの設定元からも緩和できません。
+設定の優先順位は CLI、repo、global、内蔵既定値の順とし、安全設定は global または明示 CLI だけで変更可能にしなければなりません。ただし verification configuration は repo-scoped のみとし、global 設定または CLI から指定できてはなりません。対象外 staged 内容と選択状態の保護、および明確な機密ファイルの常時除外は v1 の変更不能 invariant とし、どの設定元からも緩和できません。
 
 repo 設定に安全設定の禁止 key が含まれる場合、CLI は設定エラーとして停止しなければなりません。
 
@@ -361,7 +375,11 @@ commit message は通常 `type(scope): summary`、破壊的変更は `type(scope
 
 ## 11. 検証 trust
 
-`verification.commands` が global または repo 設定に明示されている場合は、その値を最優先します。明示された空配列は検証なしを意味します。`verification.commands` がどこにも明示されておらず、effective な `verification.autodetect` が true の場合だけ、repo root の `package.json` に実在する `lint`、`typecheck`、`test`、`build` script をこの順序で安全に自動検出します。package manager が repo root の情報から一意に定まらない場合は自動実行しません。
+verification configuration は repo-scoped とし、global verification configuration は存在しません。
+
+repo 設定に `verification.commands` が明示されている場合は、その command 一覧を最優先します。`verification.commands` は1件以上を必須とし、空配列は設定エラーです。
+
+`verification.commands` が未指定の場合だけ `verification.autodetect` を評価します。`verification.autodetect=true` の場合は repo root の `package.json` に実在する `lint`、`typecheck`、`test`、`build` script をこの順序で安全に自動検出します。false の場合は検証なしとします。package manager が repo root の情報から一意に定まらない場合は自動実行しません。
 
 Go、Rust、Python の標準コマンドは自動推測せず、repo 設定の argv 配列で明示します。
 
@@ -424,6 +442,10 @@ CLI は内容を読む前に path だけで機密判定を行わなければな�
 対象ファイルの staged / unstaged 境界は対象選択として保持せず、commit 成功時はファイル全体の変更へ吸収されたものとします。commit 開始前に失敗、中止、拒否、再生成、割込みが発生した場合は、対象ファイルを含む index を開始時の状態へ復元しなければなりません。
 
 verification が tracked working tree、index、または対象 untracked 集合を変更した場合、CLI は working tree の変更を自動 rollback してはなりません。index を開始時状態へ復元し、変更 path を表示して再分析を提示しなければなりません。ignored output だけの変化は許容します。
+
+各 commit の stage 直前には当該 commit の割当 file ID の change_hash を再検証し、分析後に後続対象が変更されていた場合は未分析内容を commit してはなりません。
+
+Git hook は通常の Git operation として許容し、当該 commit の割当 file ID に対応する path 内の変更だけを理由に停止してはなりません。ただし作成 commit の file set に割当外 file が混入する、または割当 file が欠落する場合は commiter 固有の security invariant 違反として後続 commit と push を停止しなければなりません。作成済み commit は自動 rollback してはなりません。
 
 一つ以上の commit 作成後に失敗または割込みが発生した場合、作成済み commit は rollback せず、対象外 staged 状態を復元し、未完了対象と回復情報を表示しなければなりません。復元を確認できない場合は push を禁止しなければなりません。
 
@@ -507,7 +529,11 @@ verification 後の再検証で tracked working tree、index、対象 untracked 
 
 ignored file だけの生成または変更は verification mutation とみなさず処理を継続できます。
 
-commit の途中で失敗した場合は既に作成した commit を reset せず、hash、未完了の計画、push 未実行を報告します。
+各 commit の stage 直前の change_hash 再検証で不一致を検出した場合は、その commit を開始せず、既に作成済みの commit は保持したまま後続 commit と push を停止し、変更された path と未完了計画を報告します。
+
+Git hook その他の通常 Git operation により作成済み commit の file set が割当 file ID と一致しない場合は、作成済み commit を reset せず、違反 path、未完了計画、push 未実行を報告して exit 7 とします。
+
+commit の途中でその他の失敗が発生した場合も既に作成した commit を reset せず、hash、未完了の計画、push 未実行を報告します。
 
 push 先を解決できない場合は、利用者が commit を承認していれば local commit まで作成し、push 失敗として停止します。
 
@@ -576,7 +602,11 @@ transport error と timeout を返す Ollama fixture を用意し、initial gene
 
 ### AC-008 検証 trust
 
-`verification.commands` が明示された場合は空配列を含めて autodetect より優先され、未指定かつ `verification.autodetect=true` の場合だけ repo root の `package.json` が自動検出対象になることを確認します。repo root の情報から package manager が一意に定まらない場合は自動実行されないことを確認します。
+global 設定に `verification.autodetect`、`verification.timeout_seconds`、`verification.commands` を記述した場合は設定エラーとして exit 2 になり、verification configuration が repo-scoped に限定されることを確認します。
+
+repo 設定で `verification.commands` が1件以上明示された場合はその command 一覧が autodetect より優先されることを確認します。明示された空配列は設定エラーとして exit 2 になることを確認します。
+
+`verification.commands` が未指定かつ `verification.autodetect=true` の場合だけ repo root の `package.json` が自動検出対象になり、未指定かつ `verification.autodetect=false` では `Verification: none` になることを確認します。repo root の情報から package manager が一意に定まらない場合は自動実行されないことを確認します。
 
 初回または trust record 不在では承認が要求され、同一 verification definition の再実行では再承認されないことを確認します。
 
@@ -592,6 +622,12 @@ hash 変化時は source type、argv、cwd、自動検出時の script name と 
 
 複数 commit の計画、成功 hook、失敗 hook、署名設定を用意し、計画順、commit message 形式、未完了時の push 禁止を確認します。
 
+先行 commit の hook または外部プロセスが後続 commit に割り当てられた file を変更する fixture を用意し、次の commit の stage 直前 change_hash 検証で不一致を検出して当該 commit を開始しないことを確認します。
+
+pre-commit hook が現在の commit に割り当てられた file の内容だけを formatter 等で変更する場合は通常の Git operation として許容され、元の change_hash との一致を要求しないことを確認します。
+
+hook が対象外 staged file または別 commit の file を現在の commit へ混入させる場合、および割当 file を commit から欠落させる場合は、作成 commit の file set 検証で security invariant 違反を検出し、作成済み commitを rollbackせず、後続 commit と push を停止して exit 7 になることを確認します。
+
 ### AC-010 push 解決
 
 upstream あり、remote 一つで upstream なし、複数 remote、branch 不明の各状態で、upstream 優先、条件付き `git push -u`、解決不能時の停止を確認します。
@@ -606,7 +642,7 @@ Ollama 未導入、daemon 停止、model 未取得、model 取得済みの各状
 
 global、repo、CLI に異なる値を設定し、CLI、repo、global、既定値の順に適用され、repo から安全設定を変更できないことを確認します。
 
-設定 schema の全 key について型、既定値、許可元、配列置換、repo root 外の `cwd` と glob の拒否を確認し、未知 key、未対応 schema version、型不一致、禁止 key が exit 2 になることを確認します。`analysis.preserve_outside_staged` が schema に存在せず、対象外 staged 保護を設定から無効化できないことを確認します。
+設定 schema の全 key について型、既定値、許可元、配列置換、repo root 外の `cwd` と glob の拒否を確認し、未知 key、未対応 schema version、型不一致、許可元外の key が exit 2 になることを確認します。global 設定の `verification.*` が拒否されること、`analysis.preserve_outside_staged` が schema に存在せず対象外 staged 保護を設定から無効化できないことを確認します。
 
 ### AC-013 言語
 
@@ -642,7 +678,7 @@ push 先を解決できない場合とネットワーク push が失敗した場
 
 verification fixture が tracked working tree、index、対象 untracked file をそれぞれ変更するケースを用意し、commit が開始されず、working tree の変更が保持され、index が開始時状態へ復元され、変更 path と再分析確認が表示されることを確認します。`y` では現在の Git 状態から対象選択、change_hash 計算、LLM 分析をやり直し、拒否時は exit 4 になることを確認します。
 
-ignored file だけを生成または変更する verification fixture では mutation とみなさず処理を継続することを確認します。verification 後に対象 file を外部プロセスから変更したケースでも commit 直前の change_hash 再検証が不一致を検出することを確認します。
+ignored file だけを生成または変更する verification fixture では mutation とみなさず処理を継続することを確認します。verification 後かつ commit 列開始前に対象 file を外部プロセスから変更したケースでも、全対象 change_hash の再検証が不一致を検出することを確認します。
 
 ### AC-021 terminal-safe 出力
 
