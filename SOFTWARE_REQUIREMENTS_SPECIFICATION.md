@@ -17,8 +17,8 @@
 
 - Git の staged、unstaged、未追跡の変更から、対象範囲を再現可能に確定する。
 - ファイル単位で目的を分類し、Conventional Commits の計画を生成する。
-- 計画、検証コマンド、機密候補を表示し、既定では明示的な確認後だけ Git の状態を変更する。
-- global 設定または CLI によって commit 確認と push 確認を個別に省略できるが、機密内容の読取確認と機密 push 確認は省略できない。
+- 計画、検証コマンド、機密判定結果を表示し、既定では明示的な確認後だけ Git の状態を変更する。明確な機密ファイルは既定で自動除外し、疑義のある機密候補だけを読取前に確認する。
+- global 設定または CLI によって commit 確認と push 確認を個別に省略できるが、疑義のある機密候補の読取確認と機密 commit の push 確認は省略できない。明確な機密ファイルを含める場合は、その実行で明示的な CLI opt-in を必要とする。
 - commit を目的単位に分割し、完了後に一度だけ安全な push を実行する。
 - 生成に使用する差分をローカルマシン外へ送信しない。
 
@@ -34,11 +34,13 @@ v1 では Windows と Linux、GUI、クラウド LLM、llama.cpp backend、Homeb
 
 **pathspec**：Git が解釈する相対パスまたはパスパターンです。
 
-**対象変更**：pathspec、Git status、未追跡ファイルの安全判定で採用されたファイル単位の変更です。tracked file は既存の staged / unstaged の境界を対象選択には使用せず、HEAD から working tree の最終状態までの変更全体を対象とします。
+**対象変更**：pathspec、Git status、未追跡ファイルの安全判定、機密判定と利用者確認を適用した後に採用されたファイル単位の変更です。tracked file は既存の staged / unstaged の境界を対象選択には使用せず、HEAD から working tree の最終状態までの変更全体を対象とします。除外されたファイルは対象変更に含めず、file ID も付与しません。
 
 **コミット計画**：対象変更を複数の commit に割り当て、各 commit のメッセージを定めた JSON です。
 
-**機密候補**：`.env*`、`*.pem`、`*.key`、credentials、secret、token、既知の SSH 鍵名など、内容を通常の差分処理へ渡す前に確認が必要なパスです。
+**明確な機密ファイル**：`.env`、`.env.*`、`*.pem`、`*.key`、既知の SSH 秘密鍵名、credentials や secret を明示する既知 path など、誤検知より漏えい防止を優先して既定で自動除外する path です。
+
+**機密候補**：名前や配置から機密を含む可能性があるものの、通常の設定ファイルである可能性も残る path です。内容を読む前に利用者確認を必要とします。
 
 **検証 trust**：特定のリポジトリで、特定の設定または manifest のハッシュと実行予定 argv を承認済みとして保存した状態です。
 
@@ -55,7 +57,7 @@ v1 の対象 OS は macOS 14 以降、対象アーキテクチャは Apple Silic
 1. CLI は Git リポジトリの状態、HEAD、branch、index lock、merge、rebase、cherry-pick、revert、conflict、detached HEAD を確認します。
 2. CLI は NUL 区切りの Git status から path 一覧と staged / unstaged の状態を取得します。stage 状態は診断と保護のための metadata とし、対象選択の境界には使用しません。
 3. CLI は pathspec を適用し、ignored を除外し、tracked file は HEAD から working tree の最終状態までをファイル単位で対象化します。partial stage を含む staged / unstaged 混在ファイルもファイル全体を対象とします。symlink はリンク先へ追従せず Git が追跡するリンク情報として対象化し、submodule は親 repo の pointer 更新だけを対象化します。
-4. CLI は機密候補を内容より先に検出し、承認された候補だけをローカル分析へ渡します。
+4. CLI は path だけで機密判定を行い、明確な機密ファイルを既定で自動除外します。機密候補は内容を読む前に確認し、承認された候補だけをローカル分析へ渡します。`--allow-sensitive` で明示された明確な機密ファイルだけは当該実行に限り対象へ含めます。
 5. CLI は変更をファイル、hunk、言語、サイズ、binary 判定、関連 test、import 差分、hash に整理します。
 6. CLI は 8K、16K、32K の順で LLM 入力を作成し、超過時は階層要約を実行します。
 7. Ollama は制約された JSON のコミット計画を返します。
@@ -79,7 +81,9 @@ pathspec を指定した場合は Git pathspec で対象を限定します。
 
 サブコマンドは `setup [--update-model]`、`doctor`、`config init --global|--repo`、`config show [--effective]`、`config path --global|--repo`、`trust list`、`trust revoke <repo>`、`version` とします。
 
-一時上書きフラグは `--dry-run`、`--no-push`、`--no-confirm-commit`、`--no-confirm-push`、`--language en|ja`、`--model`、`--record-metrics`、`--json` とします。
+一時上書きフラグは `--dry-run`、`--no-push`、`--no-confirm-commit`、`--no-confirm-push`、`--allow-sensitive <pathspec>`、`--language en|ja`、`--model`、`--record-metrics`、`--json` とします。
+
+`--allow-sensitive <pathspec>` は repeatable とし、明確な機密ファイルを当該実行で対象化するための明示 opt-in とします。指定 pathspec は通常の対象 pathspec の範囲外を追加してはならず、永続設定へ保存してはなりません。
 
 `--json` は `--dry-run` と読み取り専用サブコマンドに限定し、commit または push を伴う実行との併用を拒否します。
 
@@ -140,7 +144,7 @@ repo 設定から安全設定を変更する場合は無視して実行せず、
 
 `cwd`、`include`、`exclude` は repo root の外側へ移動できないようにします。
 
-`safety.additional_sensitive_patterns` は組み込みの機密 pattern を置換せず、追加 pattern としてだけ適用します。
+`safety.additional_sensitive_patterns` は組み込みの明確な機密 pattern を置換せず、自動除外対象へ追加する pattern としてだけ適用します。
 
 `provider = "ollama"`、`think = false`、`stream = false`、`keep_alive = 0` は v1 の固定値とし、設定で緩和できないものとします。
 
@@ -158,7 +162,7 @@ CLI は staged、unstaged、未追跡を別々に取得して状態を把握し�
 
 ### FR-003 ファイル分類
 
-CLI は各対象ファイルへ安定した file ID、path、status、言語、サイズ、binary 判定、hash を付与しなければなりません。
+CLI は機密判定と除外処理が完了した後の各対象ファイルへ安定した file ID、path、status、言語、サイズ、binary 判定、hash を付与しなければなりません。自動除外または利用者拒否されたファイルへ file ID を付与してはなりません。
 
 ### FR-004 未追跡ファイルの安全判定
 
@@ -264,7 +268,7 @@ commit 確認と push 確認は既定で有効にし、push 自体も既定で�
 
 global 設定と明示 CLI は commit 確認と push 確認を個別に省略できなければなりません。
 
-機密内容の読取確認と機密 commit の push 確認は、設定や CLI によって省略できてはなりません。
+機密候補の読取確認と機密 commit の push 確認は、設定や汎用の確認省略 CLI によって省略できてはなりません。明確な機密ファイルは既定で自動除外し、`--allow-sensitive <pathspec>` で明示された path だけを当該実行に限り対象化できなければなりません。
 
 ### FR-023 commit 計画の完全割当
 
@@ -327,17 +331,19 @@ trust は canonical repo path、設定または manifest の SHA-256、実行予
 
 差分、prompt、LLM 応答は loopback の Ollama にだけ送信し、クラウド endpoint、テレメトリー、外部 URL へ送信してはなりません。
 
-### SR-002 機密候補の事前確認
+### SR-002 機密ファイルの事前判定
 
-CLI は機密候補の内容を読む前に path と検出理由を表示し、一括承認を求めなければなりません。
+CLI は内容を読む前に path だけで機密判定を行わなければなりません。明確な機密ファイルは質問せず自動除外し、除外理由を表示しなければなりません。明確な機密ファイルを含める場合は `--allow-sensitive <pathspec>` による当該実行限定の明示 opt-in を必要とし、永続的な allow 状態を保存してはなりません。
+
+機密候補は内容を読む前に path と検出理由を表示し、一括承認を求めなければなりません。
 
 ### SR-003 機密候補の拒否
 
-利用者が拒否した機密候補は内容を読まずに除外し、除外一覧を計画画面へ表示して残りの対象だけを続行しなければなりません。
+利用者が拒否した機密候補は内容を読まずに除外し、除外一覧を計画画面へ表示して残りの対象だけを続行しなければなりません。自動除外または拒否されたファイルは対象変更と file ID 集合から除外しなければなりません。
 
-### SR-004 承認済み機密の保護
+### SR-004 対象化された機密の保護
 
-承認済み機密の内容はローカル LLM へだけ渡し、terminal、metrics、debug log、永続ファイルへ raw value、prompt、diff を保存してはなりません。
+機密候補として承認されたファイル、および `--allow-sensitive` で明示的に対象化された明確な機密ファイルの内容はローカル LLM へだけ渡し、terminal、metrics、debug log、永続ファイルへ raw value、prompt、diff を保存してはなりません。
 
 ### SR-005 機密 push の再確認
 
@@ -460,7 +466,9 @@ rename、delete、binary、symlink、submodule pointer、Unicode path、空白�
 
 ### AC-004 機密確認
 
-機密候補の承認時は local LLM へだけ内容を渡し、拒否時は内容を読まずに除外し、どちらも raw value が画面と metrics に現れないことを確認します。
+明確な機密ファイルが質問なしで自動除外され、file ID を付与されないことを確認します。`--allow-sensitive <pathspec>` で明示した場合だけ当該実行で対象化され、次回実行へ allow 状態が残らないことを確認します。
+
+機密候補は読取前に確認され、承認時は local LLM へだけ内容を渡し、拒否時は内容を読まずに除外して file ID を付与しないことを確認します。いずれの場合も raw value が画面、metrics、debug log、永続ファイルに現れないことを確認します。
 
 ### AC-005 大規模差分
 
