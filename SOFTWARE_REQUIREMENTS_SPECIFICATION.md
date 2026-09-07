@@ -5,18 +5,18 @@
 | 文書状態 | Draft v0.1 |
 | 作成日 | 2026-08-29 |
 | 対象 | 個人利用の v1 |
-| 対象実装 | 純 Go の単一バイナリ |
+| 対象実装 | Go を主体とする単一 CLI バイナリ（Tree-sitter CGo バインディングを内包） |
 
 ## 1. 目的と背景
 
 対話型コーディングエージェントを毎回起動して差分分析、コミット分割、コミット、push を実行すると、推論時間とトークン消費が発生します。
 
-本システムは、Git 操作と差分前処理を機械的に実行し、コミット計画の生成だけをローカル LLM に委ねることで、実行時間、入力サイズ、外部送信リスクを抑えます。
+本システムは、Git 操作と差分前処理を機械的に実行し、Tree-sitter による syntax-aware structural analysis で構文上の事実を抽出したうえで、変更の意味・目的とコミット計画の生成だけをローカル LLM に委ねます。これにより、低パラメータ・量子化モデルへ構文認識まで負担させることを避け、生成精度と速度を維持しながら入力サイズと外部送信リスクを抑えます。
 
 ## 2. 目標
 
 - Git の staged、unstaged、未追跡の変更から、対象範囲を再現可能に確定する。
-- ファイル単位で目的を分類し、Conventional Commits の計画を生成する。
+- Git と構文木から機械的に観測可能な事実を構造化し、変更の意味・目的とファイル grouping だけをローカル LLM に判断させて Conventional Commits の計画を生成する。
 - 計画、検証コマンド、機密判定結果を表示し、既定では明示的な確認後だけ Git の状態を変更する。明確な機密ファイルは既定で自動除外し、疑義のある機密候補だけを読取前に確認する。
 - global 設定または CLI によって commit 確認と push 確認を個別に省略できるが、疑義のある機密候補の読取確認と機密 commit の push 確認は省略できない。明確な機密ファイルを含める場合は、その実行で明示的な CLI opt-in を必要とする。
 - commit を目的単位に分割し、完了後に一度だけ安全な push を実行する。
@@ -24,7 +24,7 @@
 
 ## 3. 非目標
 
-v1 では Windows と Linux、GUI、クラウド LLM、llama.cpp backend、Homebrew Tap、hunk 単位の分割、AST 解析、submodule 内部への再帰、複数利用者向けの配布を対象にしません。
+v1 では Windows と Linux、GUI、クラウド LLM、llama.cpp backend、Homebrew Tap、hunk 単位の分割、型解決、symbol resolution、control-flow graph、data-flow analysis などの semantic static analysis、submodule 内部への再帰、複数利用者向けの配布を対象にしません。
 
 本リポジトリの初期化フェーズでは README と本仕様書だけを成果物とし、実装コード、Go モジュール、LICENSE、CI、リリース自動化、remote 設定を作成しません。
 
@@ -35,6 +35,8 @@ v1 では Windows と Linux、GUI、クラウド LLM、llama.cpp backend、Homeb
 **pathspec**：Git が解釈する相対パスまたはパスパターンです。
 
 **対象変更**：pathspec、Git status、未追跡ファイルの安全判定、機密判定と利用者確認を適用した後に採用されたファイル単位の変更です。tracked file は既存の staged / unstaged の境界を対象選択には使用せず、HEAD から working tree の最終状態までの変更全体を対象とします。除外されたファイルは対象変更に含めず、file ID も付与しません。
+
+**構造 evidence**：Git diff と構文木から機械的に観測した事実です。path、status、hunk、構文 node kind、宣言名、enclosing declaration、import / export、call expression、HTML tag / attribute、CSS selector / property などを含み得ますが、変更目的、機能上の関連、`test_for`、`should_group` などの意味的分類や grouping 推奨を含みません。
 
 **コミット計画**：対象変更を複数の commit に割り当て、各 commit のメッセージを定めた JSON です。
 
@@ -48,7 +50,7 @@ v1 では Windows と Linux、GUI、クラウド LLM、llama.cpp backend、Homeb
 
 v1 の対象 OS は macOS 14 以降、対象アーキテクチャは Apple Silicon、基準機は M3 と 16GB メモリです。
 
-実行時依存は system Git と Ollama だけにし、CGo、Oniguruma、Tree-sitter、クラウド LLM fallback を使用しません。
+実行時の外部依存は system Git と Ollama だけにします。syntax-aware structural analysis には公式 `github.com/tree-sitter/go-tree-sitter` と対象言語 grammar を使用し、Tree-sitter の C 実装を CGo 経由で単一 CLI バイナリへ組み込みます。Tree-sitter 用途以外へ CGo の利用範囲を拡大せず、外部 parser executable、runtime shared grammar、Oniguruma、クラウド LLM fallback を要求しません。
 
 既定モデルは `qwen3.5:4b-q4_K_M` とし、モデルサイズは公式配布情報を参照して約 3.4GB と扱います。[Qwen3.5 モデル情報](https://ollama.com/library/qwen3.5%3A4b-q4_K_M/blobs/81fb60c7daa8)
 
@@ -58,7 +60,7 @@ v1 の対象 OS は macOS 14 以降、対象アーキテクチャは Apple Silic
 2. CLI は NUL 区切りの Git status から path 一覧と staged / unstaged の状態を取得します。stage 状態は診断と保護のための metadata とし、対象選択の境界には使用しません。
 3. CLI は pathspec を適用し、ignored を除外し、tracked file は HEAD から working tree の最終状態までをファイル単位で対象化します。partial stage を含む staged / unstaged 混在ファイルもファイル全体を対象とします。symlink はリンク先へ追従せず Git が追跡するリンク情報として対象化し、submodule は親 repo の pointer 更新だけを対象化します。
 4. CLI は path だけで機密判定を行い、明確な機密ファイルを既定で自動除外します。機密候補は内容を読む前に確認し、承認された候補だけをローカル分析へ渡します。`--allow-sensitive` で明示された明確な機密ファイルだけは当該実行に限り対象へ含めます。
-5. CLI は変更をファイル、hunk、言語、サイズ、binary 判定、関連 test、import 差分、hash に整理します。
+5. CLI は機密判定後の対象変更について、Git metadata と Tree-sitter による構造 evidence を生成します。v1 の構文解析対象は Go、JavaScript、JSX、TypeScript、TSX、Python、Rust、HTML、CSS とし、未対応言語または構文解析に失敗した text file は raw diff と Git metadata へ fallback します。機械側は source / test、docs / source、同一 feature などの意味的関係や grouping 推奨を生成しません。
 6. CLI は 8K、16K、32K の順で LLM 入力を作成し、超過時は階層要約を実行します。
 7. Ollama は制約された JSON のコミット計画を返します。
 8. CLI は全計画と除外一覧を表示し、`Create these N commits? [y/r/N]` を一度だけ提示します。
@@ -168,13 +170,19 @@ CLI は機密判定と除外処理が完了した後の各対象ファイルへ�
 
 既定モードは `auto-safe` とし、通常テキストは追加差分として扱い、大容量または binary は内容を送らず metadata だけを計画生成へ渡さなければなりません。
 
-### FR-005 差分の構造化
+### FR-005 syntax-aware structural analysis
 
-CLI は diff hunk を解析し、変更行、symbol らしき宣言、import 差分、source と test の候補関係を構造化しなければなりません。
+CLI は機密判定後の対象 text file について diff hunk と対象ファイルの構文木を対応付け、Git から得られる事実に加えて、変更箇所を含む構文 node kind、宣言名、enclosing declaration、import / export、call expression など、構文から機械的に観測可能な構造 evidence を生成しなければなりません。
+
+v1 の Tree-sitter 対応言語は Go、JavaScript、JSX、TypeScript、TSX、Python、Rust、HTML、CSS とします。HTML では tag と attribute、CSS では selector と declaration property を構造 evidence として扱えるものとします。
+
+未対応言語、grammar 未対応、構文エラーその他の理由で十分な構造 evidence を取得できない text file は、当該ファイルだけ raw diff と Git metadata へ fallback して処理を継続しなければなりません。構文解析の失敗だけを理由に対象ファイルまたは実行全体を除外してはなりません。
+
+機械側は変更目的、feature、source / test、docs / source、同一 logical change、`test_for`、`related_to`、`should_group` などの意味的関係または grouping 推奨を生成してはなりません。
 
 ### FR-006 入力サイズ制御
 
-CLI は 8K、16K、32K の順に入力を試し、32K を超える場合は file、hunk、chunk の順に要約して最終計画へ渡さなければなりません。
+CLI は構造 evidence と必要な diff hunk を優先して LLM 入力を構成し、8K、16K、32K の順に入力を試さなければなりません。32K を超える場合は file、hunk、chunk の順に階層要約を行い、構文解析対応ファイルでは構造 evidence を失わない形で最終計画へ渡さなければなりません。
 
 ### FR-007 階層要約
 
@@ -190,7 +198,9 @@ JSON schema 違反時はエラー内容を添えて一度だけ自動修復推�
 
 ### FR-010 ファイル単位の分割
 
-CLI は同一ファイルを複数 commit へ割り当てず、source と対応 test、依存関係、docs、機械的変更を目的単位にまとめなければなりません。対象ファイルに staged / unstaged が混在する場合も hunk 単位には分割せず、そのファイルの変更全体を同一 commit に含めなければなりません。
+LLM は diff と構造 evidence から各変更の意味・目的を判断し、同一 logical change と判断したファイルを目的単位に grouping しなければなりません。機械側は合法な LLM grouping を source / test、directory、filename、import、dependency などのヒューリスティックを理由に統合、分割、並べ替えしてはなりません。
+
+CLI は同一ファイルを複数 commit へ割り当ててはなりません。対象ファイルに staged / unstaged が混在する場合も hunk 単位には分割せず、そのファイルの変更全体を同一 commit に含めなければなりません。
 
 ### FR-011 計画の確認
 
@@ -230,7 +240,7 @@ CLI は全 commit 成功後に一度だけ push し、upstream を優先し、up
 
 ### FR-018 metrics
 
-CLI は前処理、model load、prompt 評価、生成、要約、検証、Git、push の時間と、model tag または digest、context 段階、file、line、byte 数、要約回数、終了分類を表示しなければなりません。
+CLI は Git 前処理、syntax analysis、model load、prompt 評価、生成、要約、検証、Git、push の時間と、model tag または digest、context 段階、file、line、byte 数、Tree-sitter 解析成功 / fallback file 数、要約回数、終了分類を表示しなければなりません。
 
 ### FR-019 daemon lifecycle
 
@@ -284,7 +294,9 @@ global 設定と明示 CLI は commit 確認と push 確認を個別に省略で
 
 Ollama endpoint は loopback に限定し、`think: false`、`stream: false`、JSON Schema、`keep_alive: 0` を使用します。[Ollama Chat API](https://docs.ollama.com/api/chat) と [Structured Outputs](https://docs.ollama.com/capabilities/structured-outputs) を参照します。
 
-入力には、機械的に計算した repo 状態、対象 file ID、path、status、言語、hash、diff または要約、関連 test 候補だけを含めます。
+入力には、機械的に計算した repo 状態、対象 file ID、path、status、言語、hash、構造 evidence、必要な raw diff hunk または階層要約を含めます。構造 evidence は構文上の観測事実に限定し、source / test、docs / source、同一 feature、同一 logical change などの意味的 relation label や grouping 推奨を含めません。
+
+LLM は各ファイルの実際の変更内容から変更目的を判断し、その目的をファイル間で比較して grouping を決定します。path、同一 directory、類似 filename、import 関係、構文 node の近さだけを grouping の決定根拠として扱ってはなりません。
 
 出力 schema は次の形式を必須とします。
 
@@ -343,7 +355,7 @@ CLI は内容を読む前に path だけで機密判定を行わなければな�
 
 ### SR-004 対象化された機密の保護
 
-機密候補として承認されたファイル、および `--allow-sensitive` で明示的に対象化された明確な機密ファイルの内容はローカル LLM へだけ渡し、terminal、metrics、debug log、永続ファイルへ raw value、prompt、diff を保存してはなりません。
+機密候補として承認されたファイル、および `--allow-sensitive` で明示的に対象化された明確な機密ファイルの内容は、commiter プロセス内の構造解析と loopback のローカル LLM にだけ渡し、terminal、metrics、debug log、永続ファイルへ raw value、prompt、diff を保存してはなりません。
 
 ### SR-005 機密 push の再確認
 
@@ -379,7 +391,7 @@ CLI は commit summary と LLM 生成出力を検査し、承認済み機密の 
 
 ### NFR-001 再現性
 
-同じ Git 状態、設定 hash、model digest、入力に対して、機械的な対象集合と schema 検証結果を再現できなければなりません。
+同じ Git 状態、設定 hash、model digest、入力、および同一 build に固定された Tree-sitter / grammar version に対して、機械的な対象集合、構造 evidence、schema 検証結果を再現できなければなりません。
 
 ### NFR-002 メモリ管理
 
@@ -397,7 +409,9 @@ commit、push、検証、stage の各状態、実行予定、失敗箇所、回�
 
 言語、binary、vendor 判定には Apache-2.0 の `github.com/go-enry/go-enry/v2` を採用し、拡張子の自前表より精度と保守性を優先します。
 
-go-enry の生成データによる binary 容量への影響を許容し、CGo と Oniguruma は使用しません。[go-enry](https://github.com/go-enry/go-enry)
+go-enry の生成データによる binary 容量への影響を許容し、Oniguruma は使用しません。[go-enry](https://github.com/go-enry/go-enry)
+
+syntax-aware structural analysis には公式 `github.com/tree-sitter/go-tree-sitter` と公式 grammar の Go bindings を採用します。Tree-sitter core と grammar の C code は CGo で build 時に単一 CLI バイナリへ組み込み、実行時に外部 parser executable や shared grammar library を要求しません。CGo の利用はこの構文解析境界に限定します。[go-tree-sitter](https://github.com/tree-sitter/go-tree-sitter)
 
 `**` を含む glob には MIT の `github.com/bmatcuk/doublestar/v4` を採用し、`**` を扱えない標準 `path.Match` は代替にしません。
 
@@ -409,7 +423,7 @@ TOML 入力サイズに上限を設け、未知 key は設定エラーにしま�
 
 JSON、HTTP、subprocess は Go 標準ライブラリを使用します。
 
-差分 hunk parser、分類、source と test の対応付け、TS/JS、Python、Rust、Go の import 抽出は軽量な自前処理とし、Tree-sitter と AST parser は使用しません。
+差分 hunk と構文 node range の対応付け、構造 evidence の正規化、LLM 入力への圧縮は Go 側で実装します。Tree-sitter は syntax-aware structural analysis に限定して使用し、型解決、cross-file symbol resolution、call graph、control-flow graph、data-flow analysis などの semantic static analysis へ拡張しません。
 
 ### NFR-006 ローカル記録
 
@@ -424,6 +438,8 @@ v1 では数値性能ゲートを設けず、M3 と 16GB の環境で区間別�
 ## 14. 障害時の動作
 
 LLM が利用できない、model 未導入、API 互換性診断失敗、timeout、schema 検証失敗、検証失敗、commit 開始前の stage 復元失敗の場合は commit と push を開始しません。
+
+個別ファイルの Tree-sitter grammar 未対応、構文エラー、または構造 evidence 抽出失敗は致命エラーとせず、当該ファイルだけ raw diff と Git metadata へ fallback します。
 
 commit の途中で失敗した場合は既に作成した commit を reset せず、hash、未完了の計画、push 未実行を報告します。
 
@@ -474,9 +490,13 @@ rename、delete、binary、symlink、submodule pointer、Unicode path、空白�
 
 8K を超える変更、16K を超える変更、32K を超える変更を用意し、context 段階、階層要約回数、完全な file ID 集合が記録されることを確認します。
 
-### AC-006 計画分割
+### AC-006 構造解析と計画分割
 
-source、対応 test、docs、依存変更、機械的変更を含む差分で、file ID の欠落、重複、範囲外割当が検出され、同一ファイルの hunk 分割が行われないことを確認します。
+Go、JavaScript、JSX、TypeScript、TSX、Python、Rust、HTML、CSS の fixture で、変更 hunk に対応する構文 node、宣言、import / export、HTML tag / attribute、CSS selector / property などの構造 evidence が取得されることを確認します。構造 evidence に source / test、同一 feature、`should_group` などの意味的 relation label が含まれないことを確認します。
+
+未対応言語または意図的に構文解析を失敗させた text file が raw diff と Git metadata へ fallback し、実行全体が継続することを確認します。
+
+source、test、docs、依存変更、機械的変更を含む差分で、LLM が意味・目的に基づいて grouping し、機械側が合法な grouping を書き換えないこと、file ID の欠落、重複、範囲外割当が検出され、同一ファイルの hunk 分割が行われないことを確認します。
 
 ### AC-007 計画再生成
 
