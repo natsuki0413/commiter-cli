@@ -1,0 +1,44 @@
+name: Bug report
+description: 不具合を報告する
+labels:
+  - bug
+body:
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期待した動作
+      description: 本来どう動くべきだったかを記載してください。
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 実際の動作
+      description: 何が起きたかを記載してください。機密情報は含めないでください。
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 再現手順
+      description: 再現に必要な最小の手順や入力を記載してください。
+      placeholder: |-
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: 実行環境
+      description: macOSのバージョン、Apple Silicon、commiter-cliのバージョンなどを記載してください。
+    validations:
+      required: false
+  - type: textarea
+    id: additional
+    attributes:
+      label: 補足
+      description: エラーメッセージや最小構成など、追加情報があれば記載してください。
+    validations:
+      required: false

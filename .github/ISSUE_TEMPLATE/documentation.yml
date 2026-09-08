@@ -1,0 +1,26 @@
+name: Documentation
+description: ドキュメントの追加・修正を提案する
+labels:
+  - documentation
+body:
+  - type: input
+    id: target
+    attributes:
+      label: 対象文書
+      description: README、SRS、その他の対象文書を記載してください。
+    validations:
+      required: true
+  - type: textarea
+    id: change
+    attributes:
+      label: 必要な変更
+      description: 不足・誤り・改善内容を記載してください。
+    validations:
+      required: true
+  - type: textarea
+    id: additional
+    attributes:
+      label: 補足
+      description: 想定読者や参考資料があれば記載してください。
+    validations:
+      required: false

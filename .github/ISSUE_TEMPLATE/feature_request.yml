@@ -1,0 +1,28 @@
+name: Feature / Enhancement
+description: 新機能や改善を提案する
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: 目的
+      description: 何を実現したいか、なぜ必要かを記載してください。
+      placeholder: 例：変更を安全に分類してからコミットできるようにしたい。
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: 期待する動作
+      description: 想定する動作や利用例を記載してください。
+      placeholder: 例：CLI実行時に対象ファイルと分類結果を表示する。
+    validations:
+      required: false
+  - type: textarea
+    id: additional
+    attributes:
+      label: 補足
+      description: 関連Issue、参考資料、その他の情報があれば記載してください。
+    validations:
+      required: false
