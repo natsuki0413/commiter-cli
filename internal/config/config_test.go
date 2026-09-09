@@ -150,6 +150,9 @@ func TestResolveRejectsInvalidConfigurationWithoutRawValue(t *testing.T) {
 		{"unsupported version", SourceGlobal, "schema_version = 2\n", "unsupported schema_version"},
 		{"empty commands", SourceRepo, "schema_version = 1\nverification.commands = []\n", "at least one command"},
 		{"outside glob", SourceRepo, "schema_version = 1\n[analysis]\ninclude = [\"../secret\"]\n", "must not escape"},
+		{"remote endpoint", SourceGlobal, "schema_version = 1\n[llm]\nendpoint = \"http://example.com:11434\"\n", "loopback HTTP URL"},
+		{"empty unknown table", SourceGlobal, "schema_version = 1\n[completely_unknown]\n", "unknown configuration key"},
+		{"empty unknown nested table", SourceGlobal, "schema_version = 1\n[commit.unknown]\n", "unknown configuration key"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -168,6 +171,33 @@ func TestResolveRejectsInvalidConfigurationWithoutRawValue(t *testing.T) {
 				t.Fatalf("error exposed raw value: %v", err)
 			}
 		})
+	}
+}
+
+func TestResolveAcceptsOnlyLoopbackEndpoints(t *testing.T) {
+	for _, endpoint := range []string{
+		"http://127.0.0.1:11434",
+		"http://127.255.255.254:11434",
+		"http://[::1]:11434",
+		"http://LOCALHOST:11434",
+	} {
+		t.Run(endpoint, func(t *testing.T) {
+			root := t.TempDir()
+			global := filepath.Join(root, "global.toml")
+			writeTestFile(t, global, "[llm]\nendpoint = \""+endpoint+"\"\n")
+			if _, err := Resolve(global, filepath.Join(root, "missing"), root, CLIOverrides{}); err != nil {
+				t.Fatalf("Resolve() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestResolveAcceptsKnownEmptyTable(t *testing.T) {
+	root := t.TempDir()
+	global := filepath.Join(root, "global.toml")
+	writeTestFile(t, global, "schema_version = 1\n[commit]\n")
+	if _, err := Resolve(global, filepath.Join(root, "missing"), root, CLIOverrides{}); err != nil {
+		t.Fatalf("Resolve() error = %v", err)
 	}
 }
 

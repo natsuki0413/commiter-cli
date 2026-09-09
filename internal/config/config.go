@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -207,6 +208,9 @@ func flatten(prefix string, table map[string]any, flat map[string]any) error {
 			continue
 		}
 		if nested, ok := value.(map[string]any); ok {
+			if !isSchemaTable(path) {
+				return fmt.Errorf("unknown configuration key %q", path)
+			}
 			if err := flatten(path, nested, flat); err != nil {
 				return err
 			}
@@ -215,6 +219,16 @@ func flatten(prefix string, table map[string]any, flat map[string]any) error {
 		flat[path] = value
 	}
 	return nil
+}
+
+func isSchemaTable(path string) bool {
+	prefix := path + "."
+	for key := range schema {
+		if strings.HasPrefix(key, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func applyValue(e *Effective, key, kind string, raw any, source Source, repoRoot string) error {
@@ -337,9 +351,8 @@ func validateValues(v Values, repoRoot string) error {
 	if v.Model == "" {
 		return fmt.Errorf("llm.model must not be empty")
 	}
-	endpoint, err := url.Parse(v.Endpoint)
-	if err != nil || endpoint.Scheme != "http" || endpoint.Host == "" {
-		return fmt.Errorf("llm.endpoint must be an HTTP URL")
+	if err := validateEndpoint(v.Endpoint); err != nil {
+		return err
 	}
 	for _, pattern := range append(append([]string{}, v.Include...), v.Exclude...) {
 		if err := validateRepoPattern(pattern); err != nil {
@@ -355,6 +368,22 @@ func validateValues(v Values, repoRoot string) error {
 				return err
 			}
 		}
+	}
+	return nil
+}
+
+func validateEndpoint(raw string) error {
+	endpoint, err := url.Parse(raw)
+	if err != nil || endpoint.Scheme != "http" || endpoint.Host == "" {
+		return fmt.Errorf("llm.endpoint must be a loopback HTTP URL")
+	}
+	host := endpoint.Hostname()
+	if strings.EqualFold(host, "localhost") {
+		return nil
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("llm.endpoint must be a loopback HTTP URL")
 	}
 	return nil
 }
