@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/natsuki0413/commiter-cli/internal/trust"
 )
 
 func TestVersionHumanAndJSON(t *testing.T) {
@@ -214,6 +216,44 @@ func TestTrustListJSONIsReadOnly(t *testing.T) {
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || len(result.Trust) != 0 {
 		t.Fatalf("JSON = %q, error = %v", stdout.String(), err)
+	}
+}
+
+func TestTrustListShowsCanonicalRepoHashSourceAndArgv(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+	repo := t.TempDir()
+	store := trust.New(filepath.Join(stateHome, "commiter"))
+	if err := store.Approve(trust.Entry{
+		RepoPath:       repo,
+		DefinitionHash: "definition-hash",
+		SourceType:     "repo_config",
+		Commands:       [][]string{{"go", "test", "./..."}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"--json", "trust", "list"}, &stdout, &stderr)
+	if code != 0 || stderr.Len() != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+	}
+	var result struct {
+		Trust []trust.Entry `json:"trust"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Trust) != 1 || result.Trust[0].RepoPath != canonical || result.Trust[0].DefinitionHash != "definition-hash" || result.Trust[0].SourceType != "repo_config" {
+		t.Fatalf("trust = %#v", result.Trust)
+	}
+	if len(result.Trust[0].Commands) != 1 || strings.Join(result.Trust[0].Commands[0], " ") != "go test ./..." {
+		t.Fatalf("argv = %#v", result.Trust[0].Commands)
 	}
 }
 

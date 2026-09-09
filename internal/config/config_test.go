@@ -299,6 +299,21 @@ func TestResolvePathsUsesXDGAndFallbacks(t *testing.T) {
 	}
 }
 
+func TestInitDoesNotOverwriteExistingConfiguration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	writeTestFile(t, path, "original\n")
+	if err := Init(path, "replacement\n", 0o600); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("Init() error = %v", err)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(contents) != "original\n" {
+		t.Fatalf("contents = %q", contents)
+	}
+}
+
 func TestTemplatesSatisfyTheirAllowedScopes(t *testing.T) {
 	root := t.TempDir()
 	global, repo := filepath.Join(t.TempDir(), "config.toml"), filepath.Join(root, ".commiter.toml")
