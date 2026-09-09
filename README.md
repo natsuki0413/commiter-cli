@@ -4,9 +4,9 @@
 
 ## 状態
 
-このリポジトリは個人用 v1 の要件定義段階です。
+このリポジトリは個人用 v1 の初期実装段階です。
 
-実装コード、Go モジュール、配布設定はまだありません。
+Go モジュール、CLI の入口、設定解決、共通の終了コードと安全な出力境界を実装しています。commit 計画、Git 変更、Ollama 連携などの機能本体は未実装で、実行しても成功扱いにはなりません。
 
 詳細な要件は [SOFTWARE_REQUIREMENTS_SPECIFICATION.md](SOFTWARE_REQUIREMENTS_SPECIFICATION.md) に記載します。
 
@@ -23,6 +23,27 @@ CLI は純 Go の単一バイナリとして実装します。
 既定のローカルモデルは `qwen3.5:4b-q4_K_M` です。
 
 差分の収集、ファイル単位の分類、入力の圧縮、JSON 計画の検証、Git 操作は CLI が担当し、Ollama はコミット計画の生成だけを担当します。
+
+## 現在利用できるコマンド
+
+```text
+commiter version
+commiter config init --global|--repo
+commiter config show [--effective]
+commiter config path --global|--repo
+commiter trust list
+commiter trust revoke <repo>
+```
+
+`--json` は `version`、`config show`、`config path`、`trust list` と、将来の `--dry-run` に限定されます。
+
+開発時の確認は次のコマンドで実行します。
+
+```sh
+go test ./...
+go vet ./...
+go build ./cmd/commiter
+```
 
 ## 次段階
 
