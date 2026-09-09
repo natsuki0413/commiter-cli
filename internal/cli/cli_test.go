@@ -216,3 +216,27 @@ func TestTrustListJSONIsReadOnly(t *testing.T) {
 		t.Fatalf("JSON = %q, error = %v", stdout.String(), err)
 	}
 }
+
+func TestCorruptTrustStateIsInternalForListAndRevoke(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+	stateDir := filepath.Join(stateHome, "commiter")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "trust.json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	repo := t.TempDir()
+
+	for _, args := range [][]string{{"trust", "list"}, {"trust", "revoke", repo}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := Run(args, &stdout, &stderr)
+			if code != 1 || !strings.Contains(stderr.String(), "invalid trust state") {
+				t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+			}
+		})
+	}
+}

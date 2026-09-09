@@ -326,7 +326,7 @@ func runTrust(opts options, printer *output.Printer) int {
 		}
 		revoked, err := store.Revoke(opts.args[1])
 		if err != nil {
-			return fail(printer, exitcode.New(exitcode.Usage, err.Error()))
+			return fail(printer, exitcode.New(exitcode.Internal, err.Error()))
 		}
 		message := "trust entry not found"
 		if revoked {
