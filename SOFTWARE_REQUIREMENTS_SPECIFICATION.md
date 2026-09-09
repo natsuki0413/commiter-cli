@@ -112,7 +112,7 @@ repo 設定はリポジトリ直下の `.commiter.toml` とします。
 
 metrics の永続化は既定で無効とし、明示設定または `--record-metrics` の場合だけ state 配下の `metrics.jsonl` へ行います。
 
-commit 確認、auto push、機密判定への追加 pattern、Ollama endpoint は global 設定または明示 CLI だけで変更可能にします。対象外 staged 内容と選択状態の保護は v1 の変更不能 invariant とし、設定または CLI で無効化できません。
+commit 確認と auto push は global 設定または明示 CLI だけで変更可能にし、機密判定への追加 pattern と Ollama endpoint は global 設定からのみ変更可能にします。対象外 staged 内容と選択状態の保護は v1 の変更不能 invariant とし、設定または CLI で無効化できません。
 
 verification 全体は repo-scoped とし、verification command、autodetect、timeout は repo 設定だけで指定可能にします。global 設定から verification を指定してはなりません。
 
