@@ -47,14 +47,38 @@ func TestJSONRestrictionIsUsageErrorAndDoesNotMixStderr(t *testing.T) {
 }
 
 func TestKnownButUnimplementedCommandsDoNotSucceed(t *testing.T) {
-	for _, command := range []string{"setup", "doctor"} {
-		t.Run(command, func(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"setup", []string{"setup"}},
+		{"setup update model", []string{"setup", "--update-model"}},
+		{"doctor", []string{"doctor"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			if code := Run([]string{command}, &stdout, &stderr); code == 0 {
-				t.Fatalf("%s unexpectedly succeeded", command)
+			if code := Run(test.args, &stdout, &stderr); code != 1 {
+				t.Fatalf("%v code = %d, stderr = %q", test.args, code, stderr.String())
 			}
 			if !strings.Contains(stderr.String(), "not implemented") {
 				t.Fatalf("stderr = %q", stderr.String())
+			}
+		})
+	}
+}
+
+func TestUnimplementedCommandArgumentsAreValidated(t *testing.T) {
+	tests := [][]string{
+		{"setup", "--garbage"},
+		{"setup", "--update-model", "extra"},
+		{"doctor", "nonsense"},
+	}
+	for _, args := range tests {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if code := Run(args, &stdout, &stderr); code != 2 {
+				t.Fatalf("%v code = %d, stderr = %q", args, code, stderr.String())
 			}
 		})
 	}

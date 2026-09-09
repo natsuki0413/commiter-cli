@@ -58,13 +58,29 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runConfig(opts, printer)
 	case "trust":
 		return runTrust(opts, printer)
-	case "setup", "doctor":
-		return fail(printer, exitcode.New(exitcode.Internal, opts.command+" is not implemented yet"))
+	case "setup":
+		return runSetup(opts.args, printer)
+	case "doctor":
+		return runDoctor(opts.args, printer)
 	case "":
 		return runMain(opts, printer)
 	default:
 		return fail(printer, exitcode.New(exitcode.Usage, "unknown command"))
 	}
+}
+
+func runSetup(args []string, printer *output.Printer) int {
+	if len(args) > 1 || (len(args) == 1 && args[0] != "--update-model") {
+		return fail(printer, exitcode.New(exitcode.Usage, "setup accepts only --update-model"))
+	}
+	return fail(printer, exitcode.New(exitcode.Internal, "setup is not implemented yet"))
+}
+
+func runDoctor(args []string, printer *output.Printer) int {
+	if len(args) != 0 {
+		return fail(printer, exitcode.New(exitcode.Usage, "doctor does not accept arguments"))
+	}
+	return fail(printer, exitcode.New(exitcode.Internal, "doctor is not implemented yet"))
 }
 
 func parse(args []string) (options, error) {
