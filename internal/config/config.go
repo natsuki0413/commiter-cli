@@ -140,12 +140,18 @@ func Resolve(globalPath, repoPath, repoRoot string, cli CLIOverrides) (Effective
 	if err := applyFile(&effective, globalPath, SourceGlobal, repoRoot); err != nil {
 		return Effective{}, err
 	}
+	if err := validateValues(effective.Values, repoRoot); err != nil {
+		return Effective{}, fmt.Errorf("invalid global configuration: %w", err)
+	}
 	if err := applyFile(&effective, repoPath, SourceRepo, repoRoot); err != nil {
 		return Effective{}, err
 	}
+	if err := validateValues(effective.Values, repoRoot); err != nil {
+		return Effective{}, fmt.Errorf("invalid repo configuration: %w", err)
+	}
 	applyCLI(&effective, cli)
 	if err := validateValues(effective.Values, repoRoot); err != nil {
-		return Effective{}, err
+		return Effective{}, fmt.Errorf("invalid CLI configuration: %w", err)
 	}
 	return effective, nil
 }

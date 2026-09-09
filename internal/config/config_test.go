@@ -59,6 +59,56 @@ cwd = "."
 	}
 }
 
+func TestResolveRejectsInvalidValuesBeforeHigherPriorityOverride(t *testing.T) {
+	tests := []struct {
+		name    string
+		global  string
+		repo    string
+		cli     CLIOverrides
+		wantErr string
+	}{
+		{
+			name:    "repo cannot hide unsupported global schema version",
+			global:  "schema_version = 2\n",
+			repo:    "schema_version = 1\n",
+			wantErr: "invalid global configuration: unsupported schema_version",
+		},
+		{
+			name:    "repo cannot hide global glob outside root",
+			global:  "[analysis]\ninclude = [\"../secret\"]\n",
+			repo:    "[analysis]\ninclude = [\"src/**\"]\n",
+			wantErr: "invalid global configuration: analysis glob must not escape",
+		},
+		{
+			name: "CLI cannot hide invalid repo value",
+			repo: "[commit]\nlanguage = \"invalid\"\n",
+			cli: func() CLIOverrides {
+				language := "ja"
+				return CLIOverrides{Language: &language}
+			}(),
+			wantErr: "invalid repo configuration: commit.language must be en or ja",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			global := filepath.Join(root, "global.toml")
+			repo := filepath.Join(root, "repo.toml")
+			if test.global != "" {
+				writeTestFile(t, global, test.global)
+			}
+			if test.repo != "" {
+				writeTestFile(t, repo, test.repo)
+			}
+			_, err := Resolve(global, repo, root, test.cli)
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("Resolve() error = %v, want containing %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
 func TestDefaultsCoverEverySchemaKey(t *testing.T) {
 	effective := Defaults()
 	entries := effective.Entries()
