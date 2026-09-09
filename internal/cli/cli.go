@@ -147,6 +147,9 @@ func validateJSONMode(opts options) error {
 	if opts.command == "version" {
 		return nil
 	}
+	if opts.command == "doctor" {
+		return nil
+	}
 	if opts.command == "config" && len(opts.args) > 0 && (opts.args[0] == "show" || opts.args[0] == "path") {
 		return nil
 	}

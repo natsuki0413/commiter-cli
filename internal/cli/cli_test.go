@@ -46,6 +46,32 @@ func TestJSONRestrictionIsUsageErrorAndDoesNotMixStderr(t *testing.T) {
 	}
 }
 
+func TestJSONDoctorPreservesImplementationAndUsageExitCodes(t *testing.T) {
+	tests := []struct {
+		name     string
+		args     []string
+		wantCode int
+	}{
+		{"valid but unimplemented", []string{"--json", "doctor"}, 1},
+		{"invalid argument", []string{"--json", "doctor", "nonsense"}, 2},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := Run(test.args, &stdout, &stderr)
+			if code != test.wantCode || stderr.Len() != 0 {
+				t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+			}
+			var result struct {
+				ExitCode int `json:"exit_code"`
+			}
+			if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || result.ExitCode != test.wantCode {
+				t.Fatalf("JSON = %q, error = %v", stdout.String(), err)
+			}
+		})
+	}
+}
+
 func TestKnownButUnimplementedCommandsDoNotSucceed(t *testing.T) {
 	tests := []struct {
 		name string
