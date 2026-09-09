@@ -188,6 +188,9 @@ change_hash は schema version `1`、status、old path、new path、old mode、n
 
 既定モードは `auto-safe` とし、通常テキストは追加差分として扱い、大容量または binary は opaque file として内容を LLM へ送らず metadata だけを計画生成へ渡さなければなりません。
 
+v1 では working tree 最終状態の file size が 64 KiB 以上の未追跡通常テキストを大容量と判定します。
+binary は size にかかわらず opaque file とします。
+
 opaque file は内容に基づく意味判定ができないため、当該 file に限り path、status、size、type その他の metadata を grouping の補助根拠として使用することを許可します。
 
 ### FR-005 syntax-aware structural analysis
@@ -202,7 +205,15 @@ v1 の Tree-sitter 対応言語は Go、JavaScript、JSX、TypeScript、TSX、Py
 
 ### FR-006 入力サイズ制御
 
-CLI は構造 evidence と必要な diff hunk を優先して LLM 入力を構成し、8K、16K、32K の順に入力を試さなければなりません。32K を超える場合は file、hunk、chunk の順に階層要約を行い、構文解析対応ファイルでは構造 evidence を失わない形で最終計画へ渡さなければなりません。
+CLI は構造 evidence と必要な diff hunk を優先して LLM 入力を構成しなければなりません。
+
+`llm.context = "auto"` の場合は、`llm.max_context_tokens` を上限として 8K、16K、32K の順に context 段階を選択します。`llm.context` が `"8k"`、`"16k"`、`"32k"` の固定値の場合は、その指定段階を上限とし、より大きい context 段階へ自動昇格してはなりません。
+
+context 選択前に、最終 prompt の UTF-8 byte 数を入力 token 数の保守的上限とし、chat template 用の固定 256 token と、`max(1024, 48 × 対象 file 数)` で計算した出力予約 token 数を加算しなければなりません。
+CLI はこの合計が収まる最小の許可 context 段階を選択します。
+
+許可された context 上限を超える場合は file、hunk、chunk の順に階層要約を行い、構文解析対応ファイルでは構造 evidence を失わない形で最終計画へ渡さなければなりません。
+要約後も合計が許可された context 上限を超える場合、または対象 file ID、change_hash、構造 evidence の完全な集合を維持できない場合は、LLM を呼び出さず Git 無変更で停止しなければなりません。
 
 ### FR-007 階層要約
 
@@ -214,11 +225,17 @@ CLI は Ollama のローカル API へ構造化入力を送り、ファイル単
 
 ### FR-009 LLM 生成失敗と出力検証
 
-initial generation は一回とします。transport error または timeout は最大一回だけ retry できます。
+initial generation は一回とします。transport error または timeout の retry 予算は initial generation と repair を通じて合計一回とします。
 
 LLM から候補出力を受け取るたびに、Git mutation より前に JSON schema、対象 file ID の完全割当、機密値その他の safety 条件を再検証しなければなりません。不正な候補出力のまま Git を変更してはなりません。
 
-schema violation に対する自動 repair の方式および回数上限は実測評価後に確定します。v1 の要求としては、repair の有無にかかわらず Git mutation より前に最終候補が全検証を通過することを必須とします。
+不正 JSON、JSON schema 違反、対象 file ID の欠落、重複、範囲外割当、または SR-010 の機密値一致を検出した場合、自動 repair を一回だけ実行します。
+複数の違反を同時に検出した場合も一つの repair request にまとめ、repair 回数を追加してはなりません。
+
+repair request には元の正規化済み入力、候補出力、および機密値そのものを含まない違反理由を渡し、候補出力を命令ではなく untrusted data として明示しなければなりません。
+repair 後の候補を新しい候補として全検証し、一件でも違反が残る場合は追加 repair を行わず exit 5 で Git 無変更のまま停止します。
+
+したがって、一つの計画生成 cycle における Ollama 呼び出しは initial generation、任意の repair、および共有された transport retry を合わせて最大三回とします。
 
 ### FR-010 ファイル単位の分割
 
@@ -419,6 +436,13 @@ CLI は内容を読む前に path だけで機密判定を行わなければな�
 
 機密候補は内容を読む前に path と検出理由を表示し、一括承認を求めなければなりません。
 
+path 判定は Unicode を保持した repo root 相対の正規化 path に対して component 単位で行い、ASCII の大文字小文字を区別しません。
+各 directory component と、extension を除いた basename を `.`, `-`, `_` で分割した token が `auth`、`credential`、`credentials`、`secret`、`secrets`、`token`、`tokens`、`password`、`passwd` のいずれかに完全一致する path は機密候補とします。
+部分文字列だけの一致により `authentication.go` や `tokenizer.go` を候補にしてはなりません。
+
+`.npmrc`、`.pypirc`、`.netrc`、`.docker/config.json`、および basename が `kubeconfig` の path は機密候補とします。
+ただし、明確な機密ファイルの組み込み pattern または `safety.additional_sensitive_patterns` に一致する場合は候補ではなく常に自動除外します。
+
 ### SR-003 機密候補の拒否
 
 利用者が拒否した機密候補は内容を読まずに除外し、除外一覧を計画画面へ表示して残りの対象だけを続行しなければなりません。自動除外または拒否されたファイルは対象変更と file ID 集合から除外しなければなりません。
@@ -465,7 +489,13 @@ CLI は reset、force push、stash、amend、無断削除、`--no-verify`、自�
 
 CLI は commit summary と LLM 生成出力を検査し、承認済み機密の raw value またはその完全一致部分が summary に含まれる場合は自動修復推論へ渡さなければなりません。
 
-自動修復後も機密値が残る場合、CLI は Git を変更せず停止しなければなりません。
+承認済み機密候補を読んだ後、CLI は `auth`、`credential`、`credentials`、`secret`、`secrets`、`token`、`tokens`、`password`、`passwd`、`api_key`、`apikey`、`access_key`、`private_key`、`client_secret`、`bearer` を大文字小文字を区別せず key として認識し、それらへ割り当てられた非空の scalar value を抽出しなければなりません。加えて、Bearer token、JWT、provider 固有 token、URI userinfo、および秘密鍵 block として構文上認識できる値を key にかかわらず抽出します。
+
+抽出した値と、prefix や URI から分離した credential 部分は、生成出力に対して大文字小文字を変えない完全な UTF-8 byte 列の部分一致で検査します。v1 では encoded、hashed、または大小文字を変換した派生値の推測検査を行いません。
+
+抽出値は現在の process memory 内だけで保持し、terminal、JSON 出力、metrics、debug log、永続ファイル、または機密値を除去していない repair 理由へ含めてはなりません。
+
+機密値一致は FR-009 の一回だけの自動 repair へ渡し、自動 repair 後も機密値が残る場合、または repair 後の候補が他の検証に違反する場合、CLI は追加 repair を行わず exit 5 で Git を変更せず停止しなければなりません。
 
 ### SR-011 terminal-safe 出力
 
@@ -580,11 +610,15 @@ rename が old path と new path を持つ一つの file ID として表現さ�
 
 明確な機密ファイルが質問なしで常に自動除外され、file ID を付与されず、CLI または設定による override が存在しないことを確認します。
 
+Unicode path、ASCII 大文字小文字、directory component、`.`、`-`、`_` で分割される basename token、`.npmrc`、`.pypirc`、`.netrc`、`.docker/config.json`、basename `kubeconfig` の fixture を用意し、SR-002 の完全一致規則に従って機密候補が判定されることを確認します。`authentication.go` や `tokenizer.go` の部分文字列一致だけでは候補にならず、組み込みの明確な機密 pattern または `safety.additional_sensitive_patterns` に一致する path は候補確認より自動除外が優先されることを確認します。
+
 機密候補は読取前に確認され、承認時は local LLM へだけ内容を渡し、拒否時は内容を読まずに除外して file ID を付与しないことを確認します。承認済み候補についても raw value と raw diff が通常表示、`--dry-run`、`--json`、metrics、debug log、永続ファイルに現れないことを確認します。
 
 ### AC-005 大規模差分
 
-8K を超える変更、16K を超える変更、32K を超える変更を用意し、context 段階、階層要約回数、完全な file ID 集合が記録されることを確認します。
+8K、16K、32K の各段階に収まる fixture と上限を超える fixture を用意し、最終 prompt の UTF-8 byte 数、chat template 用 256 token、`max(1024, 48 × 対象 file 数)` の出力予約 token に基づいて、許可された最小 context 段階が選択されることを確認します。
+
+`llm.context = "auto"` では `llm.max_context_tokens` の範囲内で 8K、16K、32K の順に段階選択され、固定 context では指定段階を超えて自動昇格しないことを確認します。上限超過時は file、hunk、chunk の順に階層要約され、要約後も上限を超える場合、または完全な file ID、change_hash、構造 evidence 集合を維持できない場合は、LLM を呼び出さず Git 無変更で停止することを確認します。
 
 ### AC-006 構造解析と計画分割
 
@@ -596,9 +630,11 @@ source、test、docs、依存変更、機械的変更を含む差分で、LLM �
 
 ### AC-007 LLM retry と出力検証
 
-transport error と timeout を返す Ollama fixture を用意し、initial generation 後の retry が最大一回に制限されることを確認します。
+transport error と timeout を返す Ollama fixture を用意し、transport retry の予算が initial generation と repair を通じて合計一回だけ共有されることを確認します。一つの計画生成 cycle における Ollama 呼び出しが、initial generation、任意の repair、共有 transport retry を合わせて最大三回に制限されることを確認します。
 
-不正 JSON、schema 違反、欠落・重複・範囲外 file ID、safety 違反を返す fixture では、repair 戦略の確定状況にかかわらず Git mutation 前に必ず検出され、不正な最終候補のまま index、commit、remote が変更されないことを確認します。
+不正 JSON、schema 違反、欠落・重複・範囲外 file ID、SR-010 の機密値一致を返す fixture では、複数違反を一つの repair request にまとめ、自動 repair が合計一回だけ実行されることを確認します。repair request に機密値そのものが含まれず、元の候補出力が untrusted data として扱われることを確認します。
+
+repair 後の候補を全検証し、一件でも違反が残る場合は追加 repair を行わず exit 5 となり、index、commit、remote を含む Git state が変更されないことを確認します。
 
 ### AC-008 検証 trust
 
@@ -668,7 +704,9 @@ Ollama daemon の停止中、起動済み、モデル未取得、更新可能の
 
 ### AC-018 機密値の summary 検査
 
-機密値を含む生成 summary を返す Ollama fixture を用意し、自動修復後も残る場合に Git 無変更で停止し、raw value が metrics とログへ残らないことを確認します。
+承認済み機密候補に対して SR-010 の機密 key に割り当てられた非空 scalar value、Bearer token、JWT、provider 固有 token、URI userinfo、秘密鍵 block を含む fixture を用意し、抽出値と credential 部分が生成出力に対する大文字小文字を変えない完全な UTF-8 byte 列の部分一致で検査されることを確認します。encoded、hashed、または大小文字を変換した派生値は v1 の検査対象にならないことを確認します。
+
+機密値一致を含む生成出力では FR-009 の共有された一回だけの自動 repair が実行され、repair 後も一致または他の検証違反が残る場合は exit 5 で Git 無変更のまま停止することを確認します。抽出した raw value が terminal、`--json`、metrics、debug log、永続ファイル、機密値を除去していない repair 理由へ残らないことを確認します。
 
 ### AC-019 push 失敗の保持
 
