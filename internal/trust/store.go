@@ -40,11 +40,7 @@ func (s Store) List() ([]Entry, error) {
 }
 
 func (s Store) Revoke(repo string) (bool, error) {
-	canonical, err := filepath.EvalSymlinks(repo)
-	if err != nil {
-		return false, fmt.Errorf("cannot resolve repository path")
-	}
-	canonical, err = filepath.Abs(canonical)
+	canonical, err := canonicalPath(repo)
 	if err != nil {
 		return false, fmt.Errorf("cannot resolve repository path")
 	}
@@ -69,6 +65,39 @@ func (s Store) Revoke(repo string) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+func canonicalPath(path string) (string, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("cannot resolve repository path")
+	}
+	canonical, err := filepath.EvalSymlinks(absolute)
+	if err == nil {
+		return filepath.Clean(canonical), nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("cannot resolve repository path")
+	}
+
+	existing := absolute
+	missing := []string{}
+	for {
+		parent := filepath.Dir(existing)
+		if parent == existing {
+			return "", fmt.Errorf("cannot resolve repository path")
+		}
+		missing = append([]string{filepath.Base(existing)}, missing...)
+		existing = parent
+		canonical, err = filepath.EvalSymlinks(existing)
+		if err == nil {
+			parts := append([]string{canonical}, missing...)
+			return filepath.Clean(filepath.Join(parts...)), nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("cannot resolve repository path")
+		}
+	}
 }
 
 func (s Store) read() (fileFormat, error) {

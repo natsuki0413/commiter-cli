@@ -54,3 +54,35 @@ func TestRevokeRemovesOnlyCanonicalRepository(t *testing.T) {
 		t.Fatalf("mode = %o", info.Mode().Perm())
 	}
 }
+
+func TestRevokeDeletedRepository(t *testing.T) {
+	stateDir := t.TempDir()
+	parent := t.TempDir()
+	repo := filepath.Join(parent, "deleted-repo")
+	if err := os.Mkdir(repo, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := New(stateDir)
+	if err := store.write(fileFormat{Version: 1, Entries: []Entry{{RepoPath: canonical}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(repo); err != nil {
+		t.Fatal(err)
+	}
+
+	revoked, err := store.Revoke(repo)
+	if err != nil || !revoked {
+		t.Fatalf("Revoke() = %v, %v", revoked, err)
+	}
+	entries, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("entries = %#v", entries)
+	}
+}
