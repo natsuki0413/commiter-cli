@@ -85,6 +85,25 @@ func TestOpenDoesNotStartDaemonForNonRefusedTransportFailure(t *testing.T) {
 	}
 }
 
+func TestOpenBoundsInitialCompatibilityProbe(t *testing.T) {
+	client := testClient(roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		<-request.Context().Done()
+		return nil, request.Context().Err()
+	}))
+	started := false
+	startedAt := time.Now()
+	_, err := openWithProbeTimeout(context.Background(), client, func(*urlEndpoint) (managedProcess, error) {
+		started = true
+		return newFakeProcess(), nil
+	}, 20*time.Millisecond)
+	if err == nil || started {
+		t.Fatalf("open() error = %v, started = %v", err, started)
+	}
+	if elapsed := time.Since(startedAt); elapsed > time.Second {
+		t.Fatalf("open() took %v", elapsed)
+	}
+}
+
 func readyClient() *Client {
 	return testClient(roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		return readyResponse(request), nil

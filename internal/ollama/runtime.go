@@ -15,9 +15,10 @@ import (
 )
 
 const (
-	startupTimeout = 15 * time.Second
-	probeInterval  = 100 * time.Millisecond
-	shutdownGrace  = 2 * time.Second
+	existingProbeTimeout = 3 * time.Second
+	startupTimeout       = 15 * time.Second
+	probeInterval        = 100 * time.Millisecond
+	shutdownGrace        = 2 * time.Second
 )
 
 type Runtime struct {
@@ -48,13 +49,23 @@ func Open(ctx context.Context, values config.Values) (*Runtime, error) {
 }
 
 func open(ctx context.Context, client *Client, starter processStarter) (*Runtime, error) {
-	if err := client.Compatibility(ctx); err == nil {
-		if err := requireModel(ctx, client); err != nil {
+	return openWithProbeTimeout(ctx, client, starter, existingProbeTimeout)
+}
+
+func openWithProbeTimeout(ctx context.Context, client *Client, starter processStarter, timeout time.Duration) (*Runtime, error) {
+	probeContext, cancelProbe := context.WithTimeout(ctx, timeout)
+	compatibilityErr := client.Compatibility(probeContext)
+	if compatibilityErr == nil {
+		if err := requireModel(probeContext, client); err != nil {
+			cancelProbe()
 			return nil, err
 		}
+		cancelProbe()
 		return &Runtime{Client: client, closed: make(chan struct{})}, nil
-	} else if !isConnectionRefused(err) || ctx.Err() != nil {
-		return nil, err
+	}
+	cancelProbe()
+	if !isConnectionRefused(compatibilityErr) || ctx.Err() != nil {
+		return nil, compatibilityErr
 	}
 
 	process, err := starter(&urlEndpoint{host: client.endpoint.Host})

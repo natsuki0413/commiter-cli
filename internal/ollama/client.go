@@ -10,13 +10,19 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/natsuki0413/commiter-cli/internal/config"
 	"github.com/natsuki0413/commiter-cli/internal/exitcode"
 )
 
-const maxResponseBytes = 1 << 20
+const (
+	maxResponseBytes = 1 << 20
+	// Ollama 0.9.0 added the think flag; structured output, streaming control,
+	// and keep_alive were already available by then.
+	minimumSupportedVersion = "0.9.0"
+)
 
 type Message struct {
 	Role    string `json:"role"`
@@ -112,10 +118,60 @@ func (c *Client) Compatibility(ctx context.Context) error {
 	if err := c.get(ctx, "/api/version", &response); err != nil {
 		return err
 	}
-	if strings.TrimSpace(response.Version) == "" {
-		return llmError("Ollama API compatibility check failed")
+	if !versionAtLeast(response.Version, minimumSupportedVersion) {
+		return llmError(fmt.Sprintf("Ollama %s or newer is required", minimumSupportedVersion))
 	}
 	return nil
+}
+
+func versionAtLeast(version, minimum string) bool {
+	parsed, ok := parseVersion(version)
+	if !ok {
+		return false
+	}
+	required, ok := parseVersion(minimum)
+	if !ok {
+		return false
+	}
+	for index := range parsed.core {
+		if parsed.core[index] != required.core[index] {
+			return parsed.core[index] > required.core[index]
+		}
+	}
+	return required.prerelease || !parsed.prerelease
+}
+
+type semanticVersion struct {
+	core       [3]int
+	prerelease bool
+}
+
+func parseVersion(raw string) (semanticVersion, bool) {
+	version := strings.TrimSpace(raw)
+	if version == "" {
+		return semanticVersion{}, false
+	}
+	withoutBuild, _, _ := strings.Cut(version, "+")
+	core, prerelease, hasPrerelease := strings.Cut(withoutBuild, "-")
+	if hasPrerelease && prerelease == "" {
+		return semanticVersion{}, false
+	}
+	parts := strings.Split(core, ".")
+	if len(parts) != 3 {
+		return semanticVersion{}, false
+	}
+	result := semanticVersion{prerelease: hasPrerelease}
+	for index, part := range parts {
+		if part == "" || (len(part) > 1 && part[0] == '0') {
+			return semanticVersion{}, false
+		}
+		value, err := strconv.Atoi(part)
+		if err != nil || value < 0 {
+			return semanticVersion{}, false
+		}
+		result.core[index] = value
+	}
+	return result, true
 }
 
 func (c *Client) HasModel(ctx context.Context) (bool, error) {

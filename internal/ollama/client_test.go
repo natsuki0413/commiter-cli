@@ -135,6 +135,34 @@ func TestCompatibilityRejectsMalformedAPI(t *testing.T) {
 	}
 }
 
+func TestCompatibilityRequiresVersionWithNeededFeatures(t *testing.T) {
+	tests := []struct {
+		version string
+		wantErr bool
+	}{
+		{version: "0.8.0", wantErr: true},
+		{version: "0.9.0-rc1", wantErr: true},
+		{version: "0.9.0"},
+		{version: "0.12.6"},
+		{version: "1.0.0+build"},
+		{version: "foo", wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.version, func(t *testing.T) {
+			client := testClient(roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return jsonResponse(http.StatusOK, `{"version":"`+test.version+`"}`), nil
+			}))
+			err := client.Compatibility(context.Background())
+			if (err != nil) != test.wantErr {
+				t.Fatalf("Compatibility() error = %v, wantErr = %v", err, test.wantErr)
+			}
+			if err != nil && exitcode.Code(err) != exitcode.LLM {
+				t.Fatalf("Compatibility() code = %d", exitcode.Code(err))
+			}
+		})
+	}
+}
+
 func testClient(transport http.RoundTripper) *Client {
 	client, err := New(config.Values{Endpoint: "http://127.0.0.1:11434", Model: "model"})
 	if err != nil {
