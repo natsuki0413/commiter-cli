@@ -29,9 +29,6 @@ func Validate(candidate []byte, fileIDs []string, sensitive SensitiveValues) (Pl
 			}
 		}
 	}
-	if sensitive.ContainsRawCandidate(candidate) {
-		violations = append(violations, SensitiveOutput)
-	}
 	for _, commit := range plan.Commits {
 		if sensitive.Contains([]byte(commit.Scope)) || sensitive.Contains([]byte(commit.Summary)) {
 			violations = append(violations, SensitiveOutput)

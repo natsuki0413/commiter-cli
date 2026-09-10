@@ -115,8 +115,10 @@ func TestValidateRejectsSensitiveValueAfterJSONUnescaping(t *testing.T) {
 func TestValidateDoesNotRejectPlanMetadataForSensitiveJSONScalars(t *testing.T) {
 	candidate := []byte(`{"schema_version":1,"commits":[{"type":"fix","scope":"planner","breaking":false,"summary":"valid plan","file_ids":["F001","F002"]}]}`)
 	for name, source := range map[string]string{
-		"number":  `{"token":1}`,
-		"boolean": `{"token":false}`,
+		"number":         `{"token":1}`,
+		"boolean":        `{"token":false}`,
+		"string number":  `{"token":"1"}`,
+		"string boolean": `{"token":"false"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			sensitive := ExtractSensitiveValues([]byte(source))
@@ -133,8 +135,10 @@ func TestValidateStillRejectsSensitiveJSONScalarsInSummary(t *testing.T) {
 		source  string
 		summary string
 	}{
-		"number":  {source: `{"token":1}`, summary: "plan v1"},
-		"boolean": {source: `{"token":false}`, summary: "false setting"},
+		"number":         {source: `{"token":1}`, summary: "plan v1"},
+		"boolean":        {source: `{"token":false}`, summary: "false setting"},
+		"string number":  {source: `{"token":"1"}`, summary: "plan v1"},
+		"string boolean": {source: `{"token":"false"}`, summary: "false setting"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			sensitive := ExtractSensitiveValues([]byte(test.source))
