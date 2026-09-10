@@ -357,7 +357,7 @@ global 設定と明示 CLI は commit 確認と push 確認を個別に省略で
 
 ## 10. LLM 入力と出力
 
-Ollama endpoint は loopback に限定し、`think: false`、`stream: false`、JSON Schema、`keep_alive: 0` を使用します。[Ollama Chat API](https://docs.ollama.com/api/chat) と [Structured Outputs](https://docs.ollama.com/capabilities/structured-outputs) を参照します。
+Ollama endpoint は loopback に限定し、`think: false`、`stream: false`、JSON Schema、`keep_alive: 0` を使用します。commiter v1 が必要とする API 機能、既定モデル `qwen3.5:4b-q4_K_M` の動作互換性、および thinking を無効化したモデルでの structured output 修正を基準に、対応する Ollama は `0.31.2` 以上とし、下位版、`0.31.2` の prerelease、不正な version 応答は API 非互換として扱います。[Ollama Chat API](https://docs.ollama.com/api/chat)、[Structured Outputs](https://docs.ollama.com/capabilities/structured-outputs)、[Ollama v0.31.2](https://github.com/ollama/ollama/releases/tag/v0.31.2) を参照します。
 
 入力には、機械的に計算した repo 状態、対象 file ID、old/new path、status、言語、change_hash、構造 evidence、必要な raw diff hunk または階層要約を含めます。構造 evidence は構文上の観測事実に限定し、source / test、docs / source、同一 feature、同一 logical change などの意味的 relation label や grouping 推奨を含めません。
 
