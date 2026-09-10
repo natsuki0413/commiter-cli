@@ -148,6 +148,10 @@ func isConnectionRefused(err error) bool {
 	return isTransportError(err) && errors.Is(err, syscall.ECONNREFUSED)
 }
 
+// IsConnectionRefused distinguishes a stopped local daemon from API or version
+// incompatibility so callers do not offer an irrelevant start operation.
+func IsConnectionRefused(err error) bool { return isConnectionRefused(err) }
+
 func (r *Runtime) OwnedDaemon() bool {
 	return r != nil && r.owned != nil
 }

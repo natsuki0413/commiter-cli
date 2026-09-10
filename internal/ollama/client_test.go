@@ -105,6 +105,46 @@ func TestChatFixesSafetyFieldsAndReturnsContent(t *testing.T) {
 	}
 }
 
+func TestProbeCapabilitiesUsesConfiguredModelSafetyContract(t *testing.T) {
+	var received map[string]any
+	client := testClient(roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Path != "/api/chat" || request.Method != http.MethodPost {
+			t.Fatalf("request = %s %s", request.Method, request.URL.Path)
+		}
+		if err := json.NewDecoder(request.Body).Decode(&received); err != nil {
+			t.Fatal(err)
+		}
+		return jsonResponse(http.StatusOK, `{"message":{"content":"{\"ok\":true}","thinking":""},"done":true}`), nil
+	}))
+
+	result, err := client.ProbeCapabilities(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.StructuredOutput || !result.ThinkingDisabled {
+		t.Fatalf("capabilities = %#v", result)
+	}
+	if received["model"] != "model" || received["think"] != false || received["stream"] != false || received["keep_alive"] != float64(0) {
+		t.Fatalf("probe request = %#v", received)
+	}
+	if _, ok := received["format"].(map[string]any); !ok {
+		t.Fatalf("format = %#v", received["format"])
+	}
+}
+
+func TestProbeCapabilitiesReportsModelContractFailures(t *testing.T) {
+	client := testClient(roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return jsonResponse(http.StatusOK, `{"message":{"content":"not-json","thinking":"trace"},"done":true}`), nil
+	}))
+	result, err := client.ProbeCapabilities(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.StructuredOutput || result.ThinkingDisabled {
+		t.Fatalf("capabilities = %#v", result)
+	}
+}
+
 func TestChatRejectsRedirectWithoutSendingContentToTarget(t *testing.T) {
 	targetRequests := 0
 	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {

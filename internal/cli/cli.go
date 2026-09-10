@@ -25,6 +25,8 @@ var Version = "dev"
 var lookPath = exec.LookPath
 var commandFactory = exec.Command
 
+const doctorCapabilityTimeout = 2 * time.Minute
+
 type options struct {
 	json            bool
 	dryRun          bool
@@ -95,18 +97,6 @@ func runSetup(args []string, printer *output.Printer) int {
 	if err != nil {
 		return fail(printer, exitcode.New(exitcode.Usage, err.Error()))
 	}
-	if _, err := lookPath("ollama"); err != nil {
-		if _, brewErr := lookPath("brew"); brewErr != nil {
-			return fail(printer, exitcode.New(exitcode.LLM, "Ollama is not installed and Homebrew is unavailable"))
-		}
-		if !confirm("Ollama is not installed. Install it with Homebrew? [y/N] ") {
-			return fail(printer, exitcode.New(exitcode.Canceled, "setup canceled"))
-		}
-		command := commandFactory("brew", "install", "ollama")
-		if err := command.Run(); err != nil {
-			return fail(printer, exitcode.New(exitcode.LLM, "Ollama installation failed"))
-		}
-	}
 	client, err := ollama.New(effective.Values)
 	if err != nil {
 		return fail(printer, err)
@@ -114,8 +104,25 @@ func runSetup(args []string, printer *output.Printer) int {
 	probeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 	probeErr := client.Compatibility(probeCtx)
 	cancel()
-	if probeErr != nil && !confirm("Ollama daemon is stopped. Start it temporarily? [y/N] ") {
-		return fail(printer, exitcode.New(exitcode.Canceled, "setup canceled"))
+	if probeErr != nil {
+		if !ollama.IsConnectionRefused(probeErr) {
+			return fail(printer, probeErr)
+		}
+		if _, err := lookPath("ollama"); err != nil {
+			if _, brewErr := lookPath("brew"); brewErr != nil {
+				return fail(printer, exitcode.New(exitcode.LLM, "Ollama is not installed and Homebrew is unavailable"))
+			}
+			if !confirm("Ollama is not installed. Install it with Homebrew? [y/N] ") {
+				return fail(printer, exitcode.New(exitcode.Canceled, "setup canceled"))
+			}
+			command := commandFactory("brew", "install", "ollama")
+			if err := command.Run(); err != nil {
+				return fail(printer, exitcode.New(exitcode.LLM, "Ollama installation failed"))
+			}
+		}
+		if !confirm("Ollama daemon is stopped. Start it temporarily? [y/N] ") {
+			return fail(printer, exitcode.New(exitcode.Canceled, "setup canceled"))
+		}
 	}
 	runtime, err := ollama.OpenForSetup(context.Background(), effective.Values)
 	if err != nil {
@@ -133,7 +140,7 @@ func runSetup(args []string, printer *output.Printer) int {
 		update = true
 	}
 	if update {
-		if !confirm(fmt.Sprintf("Pull/update model %s? [y/N] ", effective.Values.Model)) {
+		if !confirm(fmt.Sprintf("Pull/update model %s? [y/N] ", output.Escape(effective.Values.Model))) {
 			return finishSetup(printer, "setup canceled; model was not changed")
 		}
 		if err := runtime.Client.Pull(context.Background()); err != nil {
@@ -238,7 +245,7 @@ func doctorOllama(values config.Values) map[string]map[string]any {
 	if err != nil {
 		return doctorOllamaFailure(err.Error())
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), doctorCapabilityTimeout)
 	defer cancel()
 	if err := client.Compatibility(ctx); err != nil {
 		return doctorOllamaFailure(err.Error())
@@ -250,15 +257,26 @@ func doctorOllama(values config.Values) map[string]map[string]any {
 	if !present {
 		return map[string]map[string]any{
 			"ollama":            check(false, "configured Ollama model is not installed"),
-			"structured_output": check(true, "Ollama compatibility verified; JSON Schema output enabled"),
-			"thinking":          check(true, "Ollama compatibility verified; thinking disabled"),
+			"structured_output": check(false, "configured model is unavailable for capability verification"),
+			"thinking":          check(false, "configured model is unavailable for capability verification"),
 		}
+	}
+	capabilities, err := client.ProbeCapabilities(ctx)
+	if err != nil {
+		return doctorOllamaFailure(err.Error())
 	}
 	return map[string]map[string]any{
 		"ollama":            check(true, "loopback API and configured model are ready"),
-		"structured_output": check(true, "Ollama compatibility verified; JSON Schema output enabled"),
-		"thinking":          check(true, "Ollama compatibility verified; thinking disabled"),
+		"structured_output": check(capabilities.StructuredOutput, capabilityMessage(capabilities.StructuredOutput, "configured model returned valid JSON Schema output", "configured model did not return valid JSON Schema output")),
+		"thinking":          check(capabilities.ThinkingDisabled, capabilityMessage(capabilities.ThinkingDisabled, "configured model honored thinking disabled", "configured model returned thinking output")),
 	}
+}
+
+func capabilityMessage(ok bool, success, failure string) string {
+	if ok {
+		return success
+	}
+	return failure
 }
 
 func doctorOllamaFailure(message string) map[string]map[string]any {

@@ -58,6 +58,28 @@ func TestJSONDoctorIsStableAndReadOnly(t *testing.T) {
 	configHome, stateHome := t.TempDir(), t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configHome)
 	t.Setenv("XDG_STATE_HOME", stateHome)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/version":
+			_, _ = io.WriteString(w, `{"version":"0.31.2"}`)
+		case "/api/tags":
+			_, _ = io.WriteString(w, `{"models":[{"name":"qwen3.5:4b-q4_K_M"}]}`)
+		case "/api/chat":
+			_, _ = io.WriteString(w, `{"message":{"content":"{\"ok\":true}","thinking":""},"done":true}`)
+		default:
+			http.NotFound(w, request)
+		}
+	}))
+	defer server.Close()
+	configDirectory := filepath.Join(configHome, "commiter")
+	if err := os.MkdirAll(configDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(configDirectory, "config.toml")
+	configBefore := []byte("[llm]\nendpoint = \"" + server.URL + "\"\n")
+	if err := os.WriteFile(configPath, configBefore, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	var stdout, stderr bytes.Buffer
 	code := Run([]string{"--json", "doctor"}, &stdout, &stderr)
 	if code == 2 || stderr.Len() != 0 {
@@ -73,12 +95,12 @@ func TestJSONDoctorIsStableAndReadOnly(t *testing.T) {
 	if !result.ReadOnly || result.Doctor["git"] == nil || result.Doctor["config"] == nil || result.Doctor["ollama"] == nil {
 		t.Fatalf("doctor JSON = %#v", result)
 	}
-	entries, err := os.ReadDir(configHome)
+	configAfter, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 0 {
-		t.Fatalf("doctor created configuration entries: %v", entries)
+	if !bytes.Equal(configAfter, configBefore) {
+		t.Fatalf("doctor changed configuration: %q", configAfter)
 	}
 	stateEntries, err := os.ReadDir(stateHome)
 	if err != nil {
@@ -157,6 +179,131 @@ func TestSetupUpdateModelPullsOnlyAfterApproval(t *testing.T) {
 	}
 	if !promptDisplayed || !pulled {
 		t.Fatalf("promptDisplayed=%v pulled=%v", promptDisplayed, pulled)
+	}
+}
+
+func TestSetupReusesRunningAPIWhenCLIIsNotOnPath(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/version":
+			_, _ = io.WriteString(w, `{"version":"0.31.2"}`)
+		case "/api/tags":
+			_, _ = io.WriteString(w, `{"models":[{"name":"qwen3.5:4b-q4_K_M"}]}`)
+		default:
+			http.NotFound(w, request)
+		}
+	}))
+	defer server.Close()
+	writeOllamaConfig(t, server.URL, "qwen3.5:4b-q4_K_M")
+	oldLookPath, oldConfirm := lookPath, confirmFunc
+	t.Cleanup(func() { lookPath, confirmFunc = oldLookPath, oldConfirm })
+	lookPath = func(string) (string, error) { return "", os.ErrNotExist }
+	confirmFunc = func(prompt string) bool { t.Fatalf("unexpected prompt: %s", prompt); return false }
+
+	var stdout, stderr bytes.Buffer
+	if code := Run([]string{"setup"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestSetupReturnsCompatibilityErrorWithoutDaemonPrompt(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/api/version" {
+			_, _ = io.WriteString(w, `{"version":"0.31.1"}`)
+			return
+		}
+		http.NotFound(w, request)
+	}))
+	defer server.Close()
+	writeOllamaConfig(t, server.URL, "qwen3.5:4b-q4_K_M")
+	oldConfirm := confirmFunc
+	t.Cleanup(func() { confirmFunc = oldConfirm })
+	confirmCalls := 0
+	confirmFunc = func(string) bool { confirmCalls++; return false }
+
+	var stdout, stderr bytes.Buffer
+	if code := Run([]string{"setup"}, &stdout, &stderr); code != exitcode.LLM || confirmCalls != 0 {
+		t.Fatalf("code=%d confirmCalls=%d stderr=%q", code, confirmCalls, stderr.String())
+	}
+}
+
+func TestSetupEscapesRepoControlledModelInPrompt(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/version":
+			_, _ = io.WriteString(w, `{"version":"0.31.2"}`)
+		case "/api/tags":
+			_, _ = io.WriteString(w, `{"models":[]}`)
+		default:
+			http.NotFound(w, request)
+		}
+	}))
+	defer server.Close()
+	writeOllamaConfig(t, server.URL, "unsafe\\u001b[31m")
+	oldConfirm := confirmFunc
+	t.Cleanup(func() { confirmFunc = oldConfirm })
+	prompt := ""
+	confirmFunc = func(value string) bool { prompt = value; return false }
+
+	if code := Run([]string{"setup", "--update-model"}, io.Discard, io.Discard); code != 0 {
+		t.Fatalf("code=%d", code)
+	}
+	if strings.ContainsRune(prompt, '\x1b') || !strings.Contains(prompt, `\x1b`) {
+		t.Fatalf("unsafe prompt = %q", prompt)
+	}
+}
+
+func TestDoctorProbesStructuredOutputAndThinking(t *testing.T) {
+	var probe map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/version":
+			_, _ = io.WriteString(w, `{"version":"0.31.2"}`)
+		case "/api/tags":
+			_, _ = io.WriteString(w, `{"models":[{"name":"qwen3.5:4b-q4_K_M"}]}`)
+		case "/api/chat":
+			if err := json.NewDecoder(request.Body).Decode(&probe); err != nil {
+				t.Fatal(err)
+			}
+			_, _ = io.WriteString(w, `{"message":{"content":"{\"ok\":true}","thinking":""},"done":true}`)
+		default:
+			http.NotFound(w, request)
+		}
+	}))
+	defer server.Close()
+	writeOllamaConfig(t, server.URL, "qwen3.5:4b-q4_K_M")
+	oldLookPath := lookPath
+	t.Cleanup(func() { lookPath = oldLookPath })
+	lookPath = func(string) (string, error) { return "/ollama", nil }
+
+	var stdout, stderr bytes.Buffer
+	if code := Run([]string{"--json", "doctor"}, &stdout, &stderr); code == exitcode.Usage {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	var result struct {
+		Doctor map[string]struct {
+			OK bool `json:"ok"`
+		} `json:"doctor"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.Doctor["structured_output"].OK || !result.Doctor["thinking"].OK || probe["think"] != false {
+		t.Fatalf("doctor=%#v probe=%#v", result.Doctor, probe)
+	}
+}
+
+func writeOllamaConfig(t *testing.T, endpoint, model string) {
+	t.Helper()
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	if err := os.MkdirAll(filepath.Join(configHome, "commiter"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configText := "[llm]\nmodel = \"" + model + "\"\nendpoint = \"" + endpoint + "\"\n"
+	if err := os.WriteFile(filepath.Join(configHome, "commiter", "config.toml"), []byte(configText), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 

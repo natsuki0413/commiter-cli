@@ -40,6 +40,11 @@ type ChatResponse struct {
 	EvalDuration       int64
 }
 
+type CapabilityResult struct {
+	StructuredOutput bool
+	ThinkingDisabled bool
+}
+
 type Client struct {
 	endpoint *url.URL
 	model    string
@@ -270,6 +275,42 @@ func (c *Client) Chat(ctx context.Context, messages []Message, schema json.RawMe
 		TotalDuration: response.TotalDuration, LoadDuration: response.LoadDuration,
 		PromptEvalCount: response.PromptEvalCount, PromptEvalDuration: response.PromptEvalDuration,
 		EvalCount: response.EvalCount, EvalDuration: response.EvalDuration,
+	}, nil
+}
+
+// ProbeCapabilities verifies the configured model with the same safety fields
+// used by normal requests. It does not pull or persist model state.
+func (c *Client) ProbeCapabilities(ctx context.Context) (CapabilityResult, error) {
+	schema := json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"],"additionalProperties":false}`)
+	payload := struct {
+		Model     string          `json:"model"`
+		Messages  []Message       `json:"messages"`
+		Format    json.RawMessage `json:"format"`
+		Think     bool            `json:"think"`
+		Stream    bool            `json:"stream"`
+		KeepAlive int             `json:"keep_alive"`
+	}{
+		Model:    c.model,
+		Messages: []Message{{Role: "user", Content: `Return {"ok":true}.`}},
+		Format:   schema, Think: false, Stream: false, KeepAlive: 0,
+	}
+	var response struct {
+		Message struct {
+			Content  string `json:"content"`
+			Thinking string `json:"thinking"`
+		} `json:"message"`
+		Done bool `json:"done"`
+	}
+	if err := c.post(ctx, "/api/chat", payload, &response); err != nil {
+		return CapabilityResult{}, err
+	}
+	var content struct {
+		OK *bool `json:"ok"`
+	}
+	structured := response.Done && json.Unmarshal([]byte(response.Message.Content), &content) == nil && content.OK != nil
+	return CapabilityResult{
+		StructuredOutput: structured,
+		ThinkingDisabled: strings.TrimSpace(response.Message.Thinking) == "",
 	}, nil
 }
 
