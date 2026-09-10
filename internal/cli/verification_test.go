@@ -37,6 +37,10 @@ func TestAuthorizeVerificationDefinitionDisplaysAndPersistsFullDefinition(t *tes
 			ManifestPath: "package.json",
 			ScriptName:   "test",
 			ScriptBody:   "vitest run",
+			ImplicitLifecycleScripts: []verification.ManifestScript{
+				{Name: "pretest", Body: "prepare fixtures"},
+				{Name: "posttest", Body: "clean fixtures"},
+			},
 		}},
 	}
 	var stdout, stderr bytes.Buffer
@@ -52,6 +56,10 @@ func TestAuthorizeVerificationDefinitionDisplaysAndPersistsFullDefinition(t *tes
 		"manifest_path: package.json",
 		"script_name: test",
 		"script_body: vitest run",
+		"implicit_lifecycle_script_name: pretest",
+		"implicit_lifecycle_script_body: prepare fixtures",
+		"implicit_lifecycle_script_name: posttest",
+		"implicit_lifecycle_script_body: clean fixtures",
 		"verification_definition_hash:",
 	} {
 		if !strings.Contains(stdout.String(), want) {

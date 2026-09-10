@@ -43,6 +43,12 @@ func authorizeVerificationDefinition(repo, stateDir string, definition *verifica
 					"script_name: "+command.ScriptName,
 					"script_body: "+command.ScriptBody,
 				)
+				for _, script := range command.ImplicitLifecycleScripts {
+					lines = append(lines,
+						"implicit_lifecycle_script_name: "+script.Name,
+						"implicit_lifecycle_script_body: "+script.Body,
+					)
+				}
 			}
 		}
 		lines = append(lines,

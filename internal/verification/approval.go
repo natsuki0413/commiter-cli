@@ -57,6 +57,7 @@ func cloneDefinitionForApproval(definition Definition) Definition {
 	for index, command := range definition.Commands {
 		cloned.Commands[index] = command
 		cloned.Commands[index].Argv = append([]string{}, command.Argv...)
+		cloned.Commands[index].ImplicitLifecycleScripts = append([]ManifestScript{}, command.ImplicitLifecycleScripts...)
 	}
 	return cloned
 }

@@ -83,36 +83,77 @@ func TestResolveAutodetectsOnlyOrderedRootScripts(t *testing.T) {
 	}
 }
 
-func TestResolveAutodetectDisablesImplicitLifecycleScripts(t *testing.T) {
+func TestResolveAutodetectCapturesOrDisablesImplicitLifecycleScripts(t *testing.T) {
 	tests := []struct {
-		name        string
-		manager     string
-		wantArgv    []string
-		wantCommand bool
+		name          string
+		manager       string
+		wantArgv      []string
+		wantLifecycle []ManifestScript
 	}{
-		{name: "npm", manager: "npm@10", wantArgv: []string{"npm", "run", "--ignore-scripts", "test"}, wantCommand: true},
-		{name: "pnpm", manager: "pnpm@9", wantArgv: []string{"pnpm", "--config.enable-pre-post-scripts=false", "run", "test"}, wantCommand: true},
-		{name: "yarn", manager: "yarn@1", wantCommand: false},
-		{name: "bun", manager: "bun@1", wantCommand: false},
+		{name: "npm disables lifecycle", manager: "npm@10", wantArgv: []string{"npm", "run", "--ignore-scripts", "test"}},
+		{name: "pnpm disables lifecycle", manager: "pnpm@9", wantArgv: []string{"pnpm", "--config.enable-pre-post-scripts=false", "run", "test"}},
+		{name: "yarn classic captures lifecycle", manager: "yarn@1", wantArgv: []string{"yarn", "run", "test"}, wantLifecycle: []ManifestScript{{Name: "pretest", Body: "before"}, {Name: "posttest", Body: "after"}}},
+		{name: "yarn modern has no implicit lifecycle", manager: "yarn@4", wantArgv: []string{"yarn", "run", "test"}},
+		{name: "bun captures lifecycle", manager: "bun@1", wantArgv: []string{"bun", "run", "test"}, wantLifecycle: []ManifestScript{{Name: "pretest", Body: "before"}, {Name: "posttest", Body: "after"}}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			root := t.TempDir()
-			writeFile(t, filepath.Join(root, "package.json"), `{"packageManager":"`+test.manager+`","scripts":{"pretest":"unapproved","test":"vitest","posttest":"unapproved"}}`)
+			writeFile(t, filepath.Join(root, "package.json"), `{"packageManager":"`+test.manager+`","scripts":{"pretest":"before","test":"vitest","posttest":"after"}}`)
 			definition, err := Resolve(root, config.Values{Autodetect: true})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !test.wantCommand {
-				if definition != nil {
-					t.Fatalf("definition = %#v, want nil", definition)
-				}
-				return
-			}
-			if definition == nil || len(definition.Commands) != 1 || !reflect.DeepEqual(definition.Commands[0].Argv, test.wantArgv) {
-				t.Fatalf("definition = %#v, want argv %#v", definition, test.wantArgv)
+			if definition == nil || len(definition.Commands) != 1 || !reflect.DeepEqual(definition.Commands[0].Argv, test.wantArgv) || !reflect.DeepEqual(definition.Commands[0].ImplicitLifecycleScripts, test.wantLifecycle) {
+				t.Fatalf("definition = %#v, want argv %#v and lifecycle %#v", definition, test.wantArgv, test.wantLifecycle)
 			}
 		})
+	}
+}
+
+func TestImplicitLifecycleChangeAltersHashWithoutDroppingVerification(t *testing.T) {
+	for _, manager := range []string{"yarn@1", "bun@1"} {
+		t.Run(manager, func(t *testing.T) {
+			root := t.TempDir()
+			writeFile(t, filepath.Join(root, "package.json"), `{"packageManager":"`+manager+`","scripts":{"test":"vitest"}}`)
+			withoutHook, err := Resolve(root, config.Values{Autodetect: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, filepath.Join(root, "package.json"), `{"packageManager":"`+manager+`","scripts":{"pretest":"before","test":"vitest"}}`)
+			withHook, err := Resolve(root, config.Values{Autodetect: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, filepath.Join(root, "package.json"), `{"packageManager":"`+manager+`","scripts":{"pretest":"changed","test":"vitest"}}`)
+			changedHook, err := Resolve(root, config.Values{Autodetect: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if withoutHook == nil || withHook == nil || changedHook == nil || len(withoutHook.Commands) != 1 || len(withHook.Commands) != 1 || len(changedHook.Commands) != 1 {
+				t.Fatalf("definitions = %#v, %#v, %#v", withoutHook, withHook, changedHook)
+			}
+			if mustHash(t, withoutHook) == mustHash(t, withHook) || mustHash(t, withHook) == mustHash(t, changedHook) {
+				t.Fatal("implicit lifecycle script addition or change did not alter hash")
+			}
+		})
+	}
+}
+
+func TestYarnModernIgnoresNonExecutedLifecycleScriptChanges(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "package.json"), `{"packageManager":"yarn@4","scripts":{"test":"vitest"}}`)
+	before, err := Resolve(root, config.Values{Autodetect: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(root, "package.json"), `{"packageManager":"yarn@4","scripts":{"pretest":"added","test":"vitest"}}`)
+	after, err := Resolve(root, config.Values{Autodetect: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mustHash(t, before) != mustHash(t, after) {
+		t.Fatal("non-executed Yarn Modern lifecycle script altered hash")
 	}
 }
 
@@ -362,6 +403,7 @@ func cloneDefinition(definition Definition) Definition {
 	for index, command := range definition.Commands {
 		cloned.Commands[index] = command
 		cloned.Commands[index].Argv = append([]string{}, command.Argv...)
+		cloned.Commands[index].ImplicitLifecycleScripts = append([]ManifestScript{}, command.ImplicitLifecycleScripts...)
 	}
 	return cloned
 }

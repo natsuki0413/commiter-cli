@@ -80,11 +80,16 @@ func TestAuthorizeApprovalRequestCannotChangePersistedDefinition(t *testing.T) {
 	store := trust.New(t.TempDir())
 	definition := &Definition{
 		SchemaVersion: 1,
-		SourceType:    SourceRepoConfig,
-		Commands:      []Command{{Name: "test", CWD: ".", Argv: []string{"go", "test"}}},
+		SourceType:    SourcePackageJSONAutodetect,
+		Commands: []Command{{
+			Name: "test", CWD: ".", Argv: []string{"bun", "run", "test"},
+			ManifestPath: "package.json", ScriptName: "test", ScriptBody: "vitest",
+			ImplicitLifecycleScripts: []ManifestScript{{Name: "pretest", Body: "before"}},
+		}},
 	}
 	if err := Authorize(repo, definition, store, func(request ApprovalRequest) (bool, error) {
 		request.Definition.Commands[0].Argv[0] = "changed"
+		request.Definition.Commands[0].ImplicitLifecycleScripts[0].Body = "changed"
 		return true, nil
 	}); err != nil {
 		t.Fatal(err)
@@ -93,7 +98,7 @@ func TestAuthorizeApprovalRequestCannotChangePersistedDefinition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 1 || entries[0].Commands[0][0] != "go" || definition.Commands[0].Argv[0] != "go" {
+	if len(entries) != 1 || entries[0].Commands[0][0] != "bun" || definition.Commands[0].Argv[0] != "bun" || definition.Commands[0].ImplicitLifecycleScripts[0].Body != "before" {
 		t.Fatalf("entry = %#v, definition = %#v", entries, definition)
 	}
 }

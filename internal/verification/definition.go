@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/natsuki0413/commiter-cli/internal/config"
@@ -21,12 +22,18 @@ const (
 var scriptOrder = []string{"lint", "typecheck", "test", "build"}
 
 type Command struct {
-	Name         string   `json:"name"`
-	CWD          string   `json:"cwd"`
-	Argv         []string `json:"argv"`
-	ManifestPath string   `json:"manifest_path,omitempty"`
-	ScriptName   string   `json:"script_name,omitempty"`
-	ScriptBody   string   `json:"script_body,omitempty"`
+	Name                     string           `json:"name"`
+	CWD                      string           `json:"cwd"`
+	Argv                     []string         `json:"argv"`
+	ManifestPath             string           `json:"manifest_path,omitempty"`
+	ScriptName               string           `json:"script_name,omitempty"`
+	ScriptBody               string           `json:"script_body,omitempty"`
+	ImplicitLifecycleScripts []ManifestScript `json:"implicit_lifecycle_scripts,omitempty"`
+}
+
+type ManifestScript struct {
+	Name string `json:"name"`
+	Body string `json:"body"`
 }
 
 type Definition struct {
@@ -76,12 +83,13 @@ func (d Definition) CanonicalJSON() ([]byte, error) {
 		Argv []string `json:"argv"`
 	}
 	type canonicalAutodetectCommand struct {
-		Name         string   `json:"name"`
-		CWD          string   `json:"cwd"`
-		Argv         []string `json:"argv"`
-		ManifestPath string   `json:"manifest_path"`
-		ScriptName   string   `json:"script_name"`
-		ScriptBody   string   `json:"script_body"`
+		Name                     string           `json:"name"`
+		CWD                      string           `json:"cwd"`
+		Argv                     []string         `json:"argv"`
+		ManifestPath             string           `json:"manifest_path"`
+		ScriptName               string           `json:"script_name"`
+		ScriptBody               string           `json:"script_body"`
+		ImplicitLifecycleScripts []ManifestScript `json:"implicit_lifecycle_scripts,omitempty"`
 	}
 
 	canonical := canonicalDefinition{SchemaVersion: d.SchemaVersion, SourceType: d.SourceType}
@@ -89,7 +97,7 @@ func (d Definition) CanonicalJSON() ([]byte, error) {
 	case SourceRepoConfig:
 		commands := make([]canonicalRepoCommand, 0, len(d.Commands))
 		for _, command := range d.Commands {
-			if !validCommonCommand(command) || command.ManifestPath != "" || command.ScriptName != "" || command.ScriptBody != "" {
+			if !validCommonCommand(command) || command.ManifestPath != "" || command.ScriptName != "" || command.ScriptBody != "" || len(command.ImplicitLifecycleScripts) != 0 {
 				return nil, fmt.Errorf("invalid verification definition")
 			}
 			commands = append(commands, canonicalRepoCommand{Name: command.Name, CWD: command.CWD, Argv: command.Argv})
@@ -102,12 +110,13 @@ func (d Definition) CanonicalJSON() ([]byte, error) {
 				return nil, fmt.Errorf("invalid verification definition")
 			}
 			commands = append(commands, canonicalAutodetectCommand{
-				Name:         command.Name,
-				CWD:          command.CWD,
-				Argv:         command.Argv,
-				ManifestPath: command.ManifestPath,
-				ScriptName:   command.ScriptName,
-				ScriptBody:   command.ScriptBody,
+				Name:                     command.Name,
+				CWD:                      command.CWD,
+				Argv:                     command.Argv,
+				ManifestPath:             command.ManifestPath,
+				ScriptName:               command.ScriptName,
+				ScriptBody:               command.ScriptBody,
+				ImplicitLifecycleScripts: command.ImplicitLifecycleScripts,
 			})
 		}
 		canonical.Commands = commands
@@ -169,18 +178,18 @@ func autodetect(root string) (*Definition, error) {
 		if !exists {
 			continue
 		}
-		argv, ok := autodetectArgv(manager, name, manifest.Scripts)
-		if !ok {
-			continue
-		}
-		commands = append(commands, Command{
+		command := Command{
 			Name:         name,
 			CWD:          ".",
-			Argv:         argv,
+			Argv:         autodetectArgv(manager, name),
 			ManifestPath: "package.json",
 			ScriptName:   name,
 			ScriptBody:   body,
-		})
+		}
+		if runsImplicitLifecycle(manager, manifest.PackageManager) {
+			command.ImplicitLifecycleScripts = implicitLifecycleScripts(manifest.Scripts, name)
+		}
+		commands = append(commands, command)
 	}
 	if len(commands) == 0 {
 		return nil, nil
@@ -188,23 +197,43 @@ func autodetect(root string) (*Definition, error) {
 	return &Definition{SchemaVersion: 1, SourceType: SourcePackageJSONAutodetect, Commands: commands}, nil
 }
 
-func autodetectArgv(manager, name string, scripts map[string]string) ([]string, bool) {
+func autodetectArgv(manager, name string) []string {
 	switch manager {
 	case "npm":
-		return []string{"npm", "run", "--ignore-scripts", name}, true
+		return []string{"npm", "run", "--ignore-scripts", name}
 	case "pnpm":
-		return []string{"pnpm", "--config.enable-pre-post-scripts=false", "run", name}, true
-	case "yarn", "bun":
-		if _, exists := scripts["pre"+name]; exists {
-			return nil, false
-		}
-		if _, exists := scripts["post"+name]; exists {
-			return nil, false
-		}
-		return []string{manager, "run", name}, true
+		return []string{"pnpm", "--config.enable-pre-post-scripts=false", "run", name}
 	default:
-		return nil, false
+		return []string{manager, "run", name}
 	}
+}
+
+func runsImplicitLifecycle(manager, declared string) bool {
+	if manager == "bun" {
+		return true
+	}
+	if manager != "yarn" {
+		return false
+	}
+	declaredManager, version, found := strings.Cut(declared, "@")
+	if !found || declaredManager != "yarn" {
+		return true
+	}
+	if separator := strings.IndexAny(version, ".-+"); separator >= 0 {
+		version = version[:separator]
+	}
+	major, err := strconv.Atoi(version)
+	return err != nil || major < 2
+}
+
+func implicitLifecycleScripts(scripts map[string]string, name string) []ManifestScript {
+	result := make([]ManifestScript, 0, 2)
+	for _, lifecycleName := range []string{"pre" + name, "post" + name} {
+		if body, exists := scripts[lifecycleName]; exists {
+			result = append(result, ManifestScript{Name: lifecycleName, Body: body})
+		}
+	}
+	return result
 }
 
 func packageManager(root, declared string) (string, bool, error) {
