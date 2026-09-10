@@ -112,6 +112,41 @@ func TestValidateRejectsSensitiveValueAfterJSONUnescaping(t *testing.T) {
 	}
 }
 
+func TestValidateDoesNotRejectPlanMetadataForSensitiveJSONScalars(t *testing.T) {
+	candidate := []byte(`{"schema_version":1,"commits":[{"type":"fix","scope":"planner","breaking":false,"summary":"valid plan","file_ids":["F001","F002"]}]}`)
+	for name, source := range map[string]string{
+		"number":  `{"token":1}`,
+		"boolean": `{"token":false}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			sensitive := ExtractSensitiveValues([]byte(source))
+			_, violations := Validate(candidate, []string{"F001", "F002"}, sensitive)
+			if containsViolation(violations, SensitiveOutput) {
+				t.Fatalf("metadata caused a sensitive match: %v", violations)
+			}
+		})
+	}
+}
+
+func TestValidateStillRejectsSensitiveJSONScalarsInSummary(t *testing.T) {
+	for name, test := range map[string]struct {
+		source  string
+		summary string
+	}{
+		"number":  {source: `{"token":1}`, summary: "plan v1"},
+		"boolean": {source: `{"token":false}`, summary: "false setting"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			sensitive := ExtractSensitiveValues([]byte(test.source))
+			candidate := []byte(`{"schema_version":1,"commits":[{"type":"fix","scope":"planner","breaking":true,"summary":"` + test.summary + `","file_ids":["F001","F002"]}]}`)
+			_, violations := Validate(candidate, []string{"F001", "F002"}, sensitive)
+			if !containsViolation(violations, SensitiveOutput) {
+				t.Fatalf("summary scalar was not detected: %v", violations)
+			}
+		})
+	}
+}
+
 func TestSensitiveExtractionCoversSpecifiedFormsAndExactBytes(t *testing.T) {
 	privateKey := "-----BEGIN PRIVATE KEY-----\nABC123\n-----END PRIVATE KEY-----"
 	contents := []byte(strings.Join([]string{

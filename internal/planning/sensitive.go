@@ -7,7 +7,10 @@ import (
 	"strings"
 )
 
-type SensitiveValues struct{ values [][]byte }
+type SensitiveValues struct {
+	values             [][]byte
+	rawCandidateValues [][]byte
+}
 
 var sensitiveKeys = map[string]bool{
 	"auth": true, "credential": true, "credentials": true, "secret": true, "secrets": true,
@@ -22,17 +25,23 @@ var (
 	providerPattern   = regexp.MustCompile(`\b(?:github_pat_[A-Za-z0-9_]+|gh[pousr]_[A-Za-z0-9]+|sk-[A-Za-z0-9_-]+|xox(?:a|b|p|r|s)-[A-Za-z0-9-]+|AKIA[A-Z0-9]{16})\b`)
 	uriPattern        = regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://([^/@\s]+)@`)
 	privateKeyPattern = regexp.MustCompile(`(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----`)
+	nonStringPattern  = regexp.MustCompile(`^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$`)
 )
 
 // ExtractSensitiveValues keeps extracted values in an opaque process-memory
 // container. Callers can test candidates without logging or serializing values.
 func ExtractSensitiveValues(contents ...[]byte) SensitiveValues {
 	values := make([][]byte, 0)
+	rawCandidateValues := make([][]byte, 0)
 	for _, content := range contents {
-		extractJSONScalars(content, &values)
+		extractJSONScalars(content, &values, &rawCandidateValues)
 		for _, match := range assignmentPattern.FindAllSubmatch(content, -1) {
 			if sensitiveKeys[strings.ToLower(string(match[1]))] {
-				addSensitive(&values, scalarValue(match[2]))
+				value, rawCandidate := scalarValue(match[2])
+				addSensitive(&values, value)
+				if rawCandidate {
+					addSensitive(&rawCandidateValues, value)
+				}
 			}
 		}
 		for _, pattern := range []*regexp.Regexp{bearerPattern, jwtPattern, providerPattern, privateKeyPattern} {
@@ -41,18 +50,18 @@ func ExtractSensitiveValues(contents ...[]byte) SensitiveValues {
 				if len(match) > 1 {
 					value = match[1]
 				}
-				addSensitive(&values, value)
+				addCandidateSensitive(&values, &rawCandidateValues, value)
 			}
 		}
 		for _, match := range uriPattern.FindAllSubmatch(content, -1) {
 			userinfo := match[1]
-			addSensitive(&values, userinfo)
+			addCandidateSensitive(&values, &rawCandidateValues, userinfo)
 			if separator := bytes.IndexByte(userinfo, ':'); separator >= 0 {
-				addSensitive(&values, userinfo[separator+1:])
+				addCandidateSensitive(&values, &rawCandidateValues, userinfo[separator+1:])
 			}
 		}
 	}
-	return SensitiveValues{values: values}
+	return SensitiveValues{values: values, rawCandidateValues: rawCandidateValues}
 }
 
 func (s SensitiveValues) Contains(candidate []byte) bool {
@@ -64,7 +73,16 @@ func (s SensitiveValues) Contains(candidate []byte) bool {
 	return false
 }
 
-func extractJSONScalars(content []byte, values *[][]byte) {
+func (s SensitiveValues) ContainsRawCandidate(candidate []byte) bool {
+	for _, value := range s.rawCandidateValues {
+		if len(value) > 0 && bytes.Contains(candidate, value) {
+			return true
+		}
+	}
+	return false
+}
+
+func extractJSONScalars(content []byte, values, rawCandidateValues *[][]byte) {
 	var decoded any
 	decoder := json.NewDecoder(bytes.NewReader(content))
 	decoder.UseNumber()
@@ -79,7 +97,7 @@ func extractJSONScalars(content []byte, values *[][]byte) {
 				if sensitiveKeys[strings.ToLower(key)] {
 					switch scalar := child.(type) {
 					case string:
-						addSensitive(values, []byte(scalar))
+						addCandidateSensitive(values, rawCandidateValues, []byte(scalar))
 					case json.Number, bool:
 						addSensitive(values, []byte(strings.TrimSpace(toString(scalar))))
 					}
@@ -109,10 +127,10 @@ func toString(value any) string {
 	}
 }
 
-func scalarValue(value []byte) []byte {
+func scalarValue(value []byte) ([]byte, bool) {
 	trimmed := bytes.TrimSpace(value)
 	if len(trimmed) == 0 {
-		return nil
+		return nil, false
 	}
 	if trimmed[0] == '"' || trimmed[0] == '\'' {
 		quote := trimmed[0]
@@ -124,10 +142,10 @@ func scalarValue(value []byte) []byte {
 			case trimmed[index] == '\\':
 				escaped = true
 			case trimmed[index] == quote:
-				return trimmed[1:index]
+				return trimmed[1:index], true
 			}
 		}
-		return bytes.TrimSpace(trimmed[1:])
+		return bytes.TrimSpace(trimmed[1:]), true
 	}
 	for index, current := range trimmed {
 		if current == '#' && (index == 0 || trimmed[index-1] == ' ' || trimmed[index-1] == '\t') {
@@ -135,7 +153,19 @@ func scalarValue(value []byte) []byte {
 			break
 		}
 	}
-	return bytes.TrimSpace(bytes.TrimSuffix(trimmed, []byte(",")))
+	trimmed = bytes.TrimSpace(bytes.TrimSuffix(trimmed, []byte(",")))
+	if bytes.Equal(trimmed, []byte("null")) {
+		return nil, false
+	}
+	if bytes.Equal(trimmed, []byte("true")) || bytes.Equal(trimmed, []byte("false")) || nonStringPattern.Match(trimmed) {
+		return trimmed, false
+	}
+	return trimmed, true
+}
+
+func addCandidateSensitive(values, rawCandidateValues *[][]byte, value []byte) {
+	addSensitive(values, value)
+	addSensitive(rawCandidateValues, value)
 }
 
 func addSensitive(values *[][]byte, value []byte) {
