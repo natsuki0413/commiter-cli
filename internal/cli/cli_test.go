@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/natsuki0413/commiter-cli/internal/trust"
 )
 
 func TestVersionHumanAndJSON(t *testing.T) {
@@ -214,6 +217,50 @@ func TestTrustListJSONIsReadOnly(t *testing.T) {
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || len(result.Trust) != 0 {
 		t.Fatalf("JSON = %q, error = %v", stdout.String(), err)
+	}
+}
+
+func TestTrustListShowsCanonicalRepoHashSourceAndArgv(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+	repo := t.TempDir()
+	store := trust.New(filepath.Join(stateHome, "commiter"))
+	if err := store.Approve(trust.Entry{
+		RepoPath:       repo,
+		DefinitionHash: "definition-hash",
+		SourceType:     "repo_config",
+		Commands:       [][]string{{"echo", "a b"}, {"echo", "a", "b"}, {"printf", "", "line\nbreak"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"--json", "trust", "list"}, &stdout, &stderr)
+	if code != 0 || stderr.Len() != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+	}
+	var result struct {
+		Trust []trust.Entry `json:"trust"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Trust) != 1 || result.Trust[0].RepoPath != canonical || result.Trust[0].DefinitionHash != "definition-hash" || result.Trust[0].SourceType != "repo_config" {
+		t.Fatalf("trust = %#v", result.Trust)
+	}
+	if !reflect.DeepEqual(result.Trust[0].Commands, [][]string{{"echo", "a b"}, {"echo", "a", "b"}, {"printf", "", "line\nbreak"}}) {
+		t.Fatalf("argv = %#v", result.Trust[0].Commands)
+	}
+
+	stdout.Reset()
+	code = Run([]string{"trust", "list"}, &stdout, &stderr)
+	if code != 0 || stderr.Len() != 0 || !strings.Contains(stdout.String(), `argv=[[\"echo\",\"a b\"],[\"echo\",\"a\",\"b\"],[\"printf\",\"\",\"line\\nbreak\"]]`) {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 	}
 }
 

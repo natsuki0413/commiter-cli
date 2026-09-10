@@ -50,7 +50,7 @@ v1 では Windows と Linux、GUI、クラウド LLM、llama.cpp backend、Homeb
 
 **canonical repo path**：repository root の絶対 path について symlink を解決した実体 path です。verification trust の scope key と repo 内 cwd 判定に使用します。
 
-**verification definition**：commiter が実際に起動する検証処理の意味を表す正規化対象です。source type、実行順の command 一覧、および各 command の name、repo root 相対の正規化済み cwd、完全な argv を含みます。`package.json` 自動検出では、これに manifest path、script name、script body の完全な文字列を加えます。
+**verification definition**：commiter が実際に起動する検証処理の意味を表す正規化対象です。source type、実行順の command 一覧、および各 command の name、repo root 相対の正規化済み cwd、完全な argv を含みます。`package.json` 自動検出では、これに manifest path、script name、script body の完全な文字列を加え、package manager が暗黙実行する pre/post script を無効化できない場合はその name と body も加えます。
 
 **検証 trust**：特定の canonical repo path に対して、verification definition の SHA-256 を利用者が承認済みとして保存した状態です。trust は検証コマンド定義の承認であり、検証から間接的に実行される source、dependency、lockfile その他のコード内容の安全性を保証するものではありません。
 
@@ -411,14 +411,16 @@ CLI は検証実行前に現在の verification definition を決定し、その
 - repo root 相対へ正規化した `cwd`
 - 引数境界と順序を保持した完全な `argv`
 - `package_json_autodetect` の場合だけ、manifest path、script name、script body の完全な文字列
+- `package_json_autodetect` で package manager が暗黙実行する pre/post script を無効化できない場合だけ、実行順を保持した各 script の name と body の完全な文字列
 
 正規化表現は UTF-8 の canonical JSON とし、object key 順序を固定し、不要な空白を含めず、command と argv の配列順序を保持します。trust hash はこの byte 列の SHA-256 とします。canonical repo path は hash へ含めず、trust record の scope key として別に保存します。
 
-repo 設定由来では `.commiter.toml` 全体を hash してはならず、verification definition に採用された command 定義だけを hash 対象とします。`package.json` 自動検出では manifest 全体を hash してはならず、採用した script の manifest path、script name、script body だけを hash 対象とします。
+repo 設定由来では `.commiter.toml` 全体を hash してはならず、verification definition に採用された command 定義だけを hash 対象とします。`package.json` 自動検出では manifest 全体を hash してはならず、採用した script の manifest path、script name、script body、および実際に暗黙実行される pre/post script の name と body だけを hash 対象とします。
 
-source file、Git HEAD、lockfile、dependency content、verification と無関係な manifest script、model、commit、analysis その他の設定は trust hash に含めてはなりません。ただし package manager の解決結果などが変わって最終 argv が変化した場合は、argv の変化として trust hash が変化しなければなりません。
+source file、Git HEAD、lockfile、dependency content、verification と無関係で暗黙実行もされない manifest script、model、commit、analysis その他の設定は trust hash に含めてはなりません。
+ただし package manager の解決結果などが変わって最終 argv または暗黙実行される pre/post script が変化した場合は、verification definition の変化として trust hash が変化しなければなりません。
 
-初回実行、trust record 不在、または現在の verification definition hash が保存済み hash と異なる場合、CLI は source type、実行予定 command の name、argv、cwd、自動検出時の script name と script body、現在の trust hash を表示し、検証実行前に承認を求めなければなりません。
+初回実行、trust record 不在、または現在の verification definition hash が保存済み hash と異なる場合、CLI は source type、実行予定 command の name、argv、cwd、自動検出時の script name と script body、実際に暗黙実行される pre/post script の name と body、現在の trust hash を表示し、検証実行前に承認を求めなければなりません。
 
 hash が一致する場合は再承認を要求せず、同じ verification definition を実行できます。検証コマンドがない場合は `Verification: none` と表示し、trust record の作成や追加確認なしで続行します。
 
@@ -648,11 +650,12 @@ repo 設定で `verification.commands` が1件以上明示された場合はそ�
 
 repo 設定由来では command の name、cwd、argv、command 順序の変更で trust hash が変化し、verification と無関係な `.commiter.toml` の設定変更では変化しないことを確認します。
 
-`package.json` 自動検出では採用 script の script name または script body、manifest path、最終 argv、command 順序の変更で trust hash が変化し、採用されていない script やその他の manifest field、lockfile、source file、Git HEAD、dependency content の変更だけでは変化しないことを確認します。
+`package.json` 自動検出では採用 script の script name または script body、manifest path、最終 argv、command 順序、実際に暗黙実行される pre/post script の name または body の変更で trust hash が変化し、暗黙実行されない未採用 script やその他の manifest field、lockfile、source file、Git HEAD、dependency content の変更だけでは変化しないことを確認します。
+pre/post script が存在しても採用対象の `lint`、`typecheck`、`test`、`build` 自体が自動検出から消えないことを確認します。
 
 repository root を symlink 経由と実体 path 経由の双方から起動し、同じ canonical repo path の trust scope として扱われることを確認します。verification cwd が symlink 解決後に repo root 外を指す場合は設定エラーになることを確認します。
 
-hash 変化時は source type、argv、cwd、自動検出時の script name と script body、現在の trust hash を表示して再承認を要求し、検証なしの場合は `Verification: none` と表示して trust を作成しないことを確認します。
+hash 変化時は source type、argv、cwd、自動検出時の script name と script body、実際に暗黙実行される pre/post script の name と body、現在の trust hash を表示して再承認を要求し、検証なしの場合は `Verification: none` と表示して trust を作成しないことを確認します。
 
 ### AC-009 commit と hook
 

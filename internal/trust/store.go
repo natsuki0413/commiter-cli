@@ -39,6 +39,54 @@ func (s Store) List() ([]Entry, error) {
 	return entries, nil
 }
 
+func (s Store) Matches(repo, definitionHash string) (bool, error) {
+	canonical, err := canonicalPath(repo)
+	if err != nil {
+		return false, fmt.Errorf("cannot resolve repository path")
+	}
+	state, err := s.read()
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range state.Entries {
+		if entry.RepoPath == canonical {
+			return entry.DefinitionHash == definitionHash, nil
+		}
+	}
+	return false, nil
+}
+
+// Approve records the verification definition that the user approved for one
+// canonical repository scope. A later approval for the same scope replaces it.
+func (s Store) Approve(entry Entry) error {
+	canonical, err := canonicalPath(entry.RepoPath)
+	if err != nil {
+		return fmt.Errorf("cannot resolve repository path")
+	}
+	if entry.DefinitionHash == "" || entry.SourceType == "" || len(entry.Commands) == 0 {
+		return fmt.Errorf("invalid trust entry")
+	}
+	entry.RepoPath = canonical
+	entry.Commands = cloneCommands(entry.Commands)
+	state, err := s.read()
+	if err != nil {
+		return err
+	}
+	replaced := false
+	for index := range state.Entries {
+		if state.Entries[index].RepoPath == canonical {
+			state.Entries[index] = entry
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		state.Entries = append(state.Entries, entry)
+	}
+	sort.Slice(state.Entries, func(i, j int) bool { return state.Entries[i].RepoPath < state.Entries[j].RepoPath })
+	return s.write(state)
+}
+
 func (s Store) Revoke(repo string) (bool, error) {
 	canonical, err := canonicalPath(repo)
 	if err != nil {
@@ -98,6 +146,14 @@ func canonicalPath(path string) (string, error) {
 			return "", fmt.Errorf("cannot resolve repository path")
 		}
 	}
+}
+
+func cloneCommands(commands [][]string) [][]string {
+	cloned := make([][]string, 0, len(commands))
+	for _, command := range commands {
+		cloned = append(cloned, append([]string{}, command...))
+	}
+	return cloned
 }
 
 func (s Store) read() (fileFormat, error) {

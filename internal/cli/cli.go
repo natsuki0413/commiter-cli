@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -312,7 +313,11 @@ func runTrust(opts options, printer *output.Printer) int {
 		} else {
 			lines := make([]string, 0, len(entries))
 			for _, entry := range entries {
-				lines = append(lines, fmt.Sprintf("%s hash=%s source=%s argv=%v", entry.RepoPath, entry.DefinitionHash, entry.SourceType, entry.Commands))
+				argv, err := json.Marshal(entry.Commands)
+				if err != nil {
+					return fail(printer, exitcode.New(exitcode.Internal, "cannot format trust entry"))
+				}
+				lines = append(lines, fmt.Sprintf("%s hash=%s source=%s argv=%s", entry.RepoPath, entry.DefinitionHash, entry.SourceType, argv))
 			}
 			err = printer.Lines(lines...)
 		}
