@@ -2,6 +2,9 @@
 package syntax
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"sort"
 	"strings"
 	"unsafe"
@@ -17,19 +20,15 @@ import (
 	treetypescript "github.com/tree-sitter/tree-sitter-typescript/bindings/go"
 )
 
-// Hunk is a 1-based inclusive line range in the new file. An empty range is
-// useful for an insertion at StartLine.
+// Hunk is a 1-based inclusive line range in the new file. A zero EndLine
+// represents a deletion-only hunk and falls back to raw diff.
 type Hunk struct{ StartLine, EndLine int }
 
 // Input contains only data already approved for local analysis.
 type Input struct {
-	Language          string
-	Content           []byte
-	Hunks             []Hunk
-	Binary            bool
-	Opaque            bool
-	Sensitive         bool
-	SensitiveApproved bool
+	Language string
+	Content  []byte
+	Hunks    []Hunk
 }
 
 // Evidence is deliberately limited to syntactic facts; it contains no source
@@ -62,11 +61,10 @@ type Result struct {
 // metadata collected by gitstate. RawDiff must contain only the changed hunks
 // that are safe to send to the local model.
 type ChangeInput struct {
-	Change            gitstate.Change
-	Content           []byte
-	RawDiff           string
-	Hunks             []Hunk
-	SensitiveApproved bool
+	Change  gitstate.Change
+	Content []byte
+	RawDiff string
+	Hunks   []Hunk
 }
 
 type ChangeResult struct {
@@ -90,13 +88,9 @@ var factories = map[string]languageFactory{
 	"css":        treecss.Language,
 }
 
-// Analyze parses one file and returns an explicit output mode. Metadata-only
-// inputs are never parsed, while unsupported or invalid text falls back to its
-// already-approved raw diff at the Change boundary.
+// Analyze parses text that the caller has already approved for local analysis.
+// Unsupported or invalid text falls back to its raw diff at the Change boundary.
 func Analyze(input Input) Result {
-	if input.Binary || input.Opaque || (input.Sensitive && !input.SensitiveApproved) {
-		return Result{Mode: ModeMetadataOnly}
-	}
 	factory, ok := factories[strings.ToLower(input.Language)]
 	if !ok {
 		return Result{Mode: ModeRawDiff}
@@ -149,21 +143,27 @@ func Analyze(input Input) Result {
 
 // AnalyzeChange preserves the Issue #3 Git metadata and makes raw-diff versus
 // metadata-only fallback impossible to confuse at the next pipeline boundary.
-func AnalyzeChange(input ChangeInput) ChangeResult {
+func AnalyzeChange(input ChangeInput) (ChangeResult, error) {
+	if input.Change.WorktreeKind != "file" || input.Change.Binary || input.Change.Opaque {
+		return ChangeResult{Change: input.Change, Mode: ModeMetadataOnly}, nil
+	}
+	if input.Change.WorktreeID == nil {
+		return ChangeResult{}, errors.New("regular file is missing its working-tree identity")
+	}
+	digest := sha256.Sum256(input.Content)
+	if hex.EncodeToString(digest[:]) != *input.Change.WorktreeID {
+		return ChangeResult{}, errors.New("content does not match the collected Git state")
+	}
 	analysis := Analyze(Input{
-		Language:          input.Change.Language,
-		Content:           input.Content,
-		Hunks:             input.Hunks,
-		Binary:            input.Change.Binary,
-		Opaque:            input.Change.Opaque,
-		Sensitive:         input.Change.Sensitive,
-		SensitiveApproved: input.SensitiveApproved,
+		Language: input.Change.Language,
+		Content:  input.Content,
+		Hunks:    input.Hunks,
 	})
 	result := ChangeResult{Change: input.Change, Mode: analysis.Mode, Evidence: analysis.Evidence}
 	if analysis.Mode == ModeRawDiff {
 		result.RawDiff = input.RawDiff
 	}
-	return result
+	return result, nil
 }
 
 func lineOffsets(source []byte) []int {

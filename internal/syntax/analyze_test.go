@@ -1,6 +1,8 @@
 package syntax
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"testing"
 
 	"github.com/natsuki0413/commiter-cli/internal/gitstate"
@@ -39,11 +41,8 @@ func TestAnalyzeAllSupportedLanguages(t *testing.T) {
 
 func TestAnalyzeFallsBackLocally(t *testing.T) {
 	for name, input := range map[string]Input{
-		"unsupported":          {Language: "Ruby", Content: []byte("def x; end"), Hunks: []Hunk{{1, 1}}},
-		"malformed":            {Language: "Go", Content: []byte("func ("), Hunks: []Hunk{{1, 1}}},
-		"binary":               {Language: "Go", Content: []byte("package p"), Binary: true, Hunks: []Hunk{{1, 1}}},
-		"opaque":               {Language: "Go", Content: []byte("package p"), Opaque: true, Hunks: []Hunk{{1, 1}}},
-		"unapproved-sensitive": {Language: "Go", Content: []byte("package p"), Sensitive: true, Hunks: []Hunk{{1, 1}}},
+		"unsupported": {Language: "Ruby", Content: []byte("def x; end"), Hunks: []Hunk{{1, 1}}},
+		"malformed":   {Language: "Go", Content: []byte("func ("), Hunks: []Hunk{{1, 1}}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			result := Analyze(input)
@@ -129,24 +128,60 @@ func TestAnalyzeHunkBoundariesAndFallbackSemantics(t *testing.T) {
 }
 
 func TestAnalyzeChangePreservesGitMetadataAndSeparatesFallbackModes(t *testing.T) {
-	base := gitstate.Change{ID: "F001", Status: "M", Language: "Go", ChangeHash: "hash"}
+	malformed := []byte("func (")
+	malformedID := contentID(malformed)
+	base := gitstate.Change{ID: "F001", Status: "M", Language: "Go", ChangeHash: "hash", WorktreeKind: "file", WorktreeID: &malformedID}
 	raw := "@@ -1 +1 @@\n-old\n+new\n"
 
-	text := AnalyzeChange(ChangeInput{Change: base, Content: []byte("func ("), RawDiff: raw, Hunks: []Hunk{{StartLine: 1, EndLine: 1}}})
+	text, err := AnalyzeChange(ChangeInput{Change: base, Content: malformed, RawDiff: raw, Hunks: []Hunk{{StartLine: 1, EndLine: 1}}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if text.Mode != ModeRawDiff || text.Change.ID != "F001" || text.RawDiff != raw {
 		t.Fatalf("text fallback = %#v", text)
 	}
 
 	for name, change := range map[string]gitstate.Change{
-		"binary":    {ID: "F002", Language: "Go", Binary: true},
-		"opaque":    {ID: "F003", Language: "Go", Opaque: true},
-		"sensitive": {ID: "F004", Language: "Go", Sensitive: true},
+		"binary":  {ID: "F002", Language: "Go", WorktreeKind: "file", Binary: true},
+		"opaque":  {ID: "F003", Language: "Go", WorktreeKind: "file", Opaque: true},
+		"symlink": {ID: "F004", Language: "Go", WorktreeKind: "symlink"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			result := AnalyzeChange(ChangeInput{Change: change, Content: []byte("package secret"), RawDiff: raw, Hunks: []Hunk{{1, 1}}})
+			result, err := AnalyzeChange(ChangeInput{Change: change, Content: []byte("package secret"), RawDiff: raw, Hunks: []Hunk{{1, 1}}})
+			if err != nil {
+				t.Fatal(err)
+			}
 			if result.Mode != ModeMetadataOnly || len(result.RawDiff) != 0 || len(result.Evidence) != 0 {
 				t.Fatalf("metadata-only result = %#v", result)
 			}
 		})
 	}
+}
+
+func TestAnalyzeChangeUsesApprovedSensitiveStateAndRejectsStaleContent(t *testing.T) {
+	content := []byte("package p\nfunc changed() {}\n")
+	identity := contentID(content)
+	change := gitstate.Change{ID: "F001", Language: "Go", WorktreeKind: "file", WorktreeID: &identity, Sensitive: true}
+
+	result, err := AnalyzeChange(ChangeInput{Change: change, Content: content, Hunks: []Hunk{{1, 2}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Mode != ModeStructural {
+		t.Fatalf("approved sensitive result = %#v", result)
+	}
+
+	if _, err := AnalyzeChange(ChangeInput{Change: change, Content: []byte("package changed\n"), Hunks: []Hunk{{1, 1}}}); err == nil {
+		t.Fatal("stale content was accepted")
+	}
+	missingIdentity := change
+	missingIdentity.WorktreeID = nil
+	if _, err := AnalyzeChange(ChangeInput{Change: missingIdentity, Content: content, Hunks: []Hunk{{1, 2}}}); err == nil {
+		t.Fatal("regular file without identity was accepted")
+	}
+}
+
+func contentID(content []byte) string {
+	digest := sha256.Sum256(content)
+	return hex.EncodeToString(digest[:])
 }
