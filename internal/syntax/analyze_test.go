@@ -158,6 +158,19 @@ func TestAnalyzeChangePreservesGitMetadataAndSeparatesFallbackModes(t *testing.T
 	}
 }
 
+func TestAnalyzeChangeDeletedTextFallsBackToRawDiff(t *testing.T) {
+	raw := "@@ -1 +0,0 @@\n-package p\n"
+	change := gitstate.Change{ID: "F005", Status: "D", Language: "Go", WorktreeKind: "deleted"}
+
+	result, err := AnalyzeChange(ChangeInput{Change: change, RawDiff: raw})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Mode != ModeRawDiff || result.Change.ID != "F005" || result.RawDiff != raw || len(result.Evidence) != 0 {
+		t.Fatalf("deleted text fallback = %#v", result)
+	}
+}
+
 func TestAnalyzeChangeUsesApprovedSensitiveStateAndRejectsStaleContent(t *testing.T) {
 	content := []byte("package p\nfunc changed() {}\n")
 	identity := contentID(content)

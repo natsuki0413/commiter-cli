@@ -144,7 +144,13 @@ func Analyze(input Input) Result {
 // AnalyzeChange preserves the Issue #3 Git metadata and makes raw-diff versus
 // metadata-only fallback impossible to confuse at the next pipeline boundary.
 func AnalyzeChange(input ChangeInput) (ChangeResult, error) {
-	if input.Change.WorktreeKind != "file" || input.Change.Binary || input.Change.Opaque {
+	if input.Change.Binary || input.Change.Opaque {
+		return ChangeResult{Change: input.Change, Mode: ModeMetadataOnly}, nil
+	}
+	if input.Change.WorktreeKind == "deleted" {
+		return ChangeResult{Change: input.Change, Mode: ModeRawDiff, RawDiff: input.RawDiff}, nil
+	}
+	if input.Change.WorktreeKind != "file" {
 		return ChangeResult{Change: input.Change, Mode: ModeMetadataOnly}, nil
 	}
 	if input.Change.WorktreeID == nil {
