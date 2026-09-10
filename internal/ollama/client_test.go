@@ -133,15 +133,22 @@ func TestProbeCapabilitiesUsesConfiguredModelSafetyContract(t *testing.T) {
 }
 
 func TestProbeCapabilitiesReportsModelContractFailures(t *testing.T) {
-	client := testClient(roundTripFunc(func(*http.Request) (*http.Response, error) {
-		return jsonResponse(http.StatusOK, `{"message":{"content":"not-json","thinking":"trace"},"done":true}`), nil
-	}))
-	result, err := client.ProbeCapabilities(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.StructuredOutput || result.ThinkingDisabled {
-		t.Fatalf("capabilities = %#v", result)
+	for name, response := range map[string]string{
+		"not-json":    `{"message":{"content":"not-json","thinking":"trace"},"done":true}`,
+		"extra-field": `{"message":{"content":"{\"ok\":true,\"unexpected\":\"x\"}","thinking":""},"done":true}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			client := testClient(roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return jsonResponse(http.StatusOK, response), nil
+			}))
+			result, err := client.ProbeCapabilities(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.StructuredOutput {
+				t.Fatalf("capabilities = %#v", result)
+			}
+		})
 	}
 }
 

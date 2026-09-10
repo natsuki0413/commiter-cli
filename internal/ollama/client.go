@@ -304,10 +304,14 @@ func (c *Client) ProbeCapabilities(ctx context.Context) (CapabilityResult, error
 	if err := c.post(ctx, "/api/chat", payload, &response); err != nil {
 		return CapabilityResult{}, err
 	}
-	var content struct {
-		OK *bool `json:"ok"`
+	var content map[string]json.RawMessage
+	structured := response.Done && json.Unmarshal([]byte(response.Message.Content), &content) == nil && len(content) == 1
+	if rawOK, exists := content["ok"]; structured && exists {
+		var ok bool
+		structured = json.Unmarshal(rawOK, &ok) == nil
+	} else {
+		structured = false
 	}
-	structured := response.Done && json.Unmarshal([]byte(response.Message.Content), &content) == nil && content.OK != nil
 	return CapabilityResult{
 		StructuredOutput: structured,
 		ThinkingDisabled: strings.TrimSpace(response.Message.Thinking) == "",

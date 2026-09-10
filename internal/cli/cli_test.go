@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/natsuki0413/commiter-cli/internal/exitcode"
 	"github.com/natsuki0413/commiter-cli/internal/trust"
@@ -118,9 +120,10 @@ func TestSetupConfirmationRejectionDoesNotInvokeOperation(t *testing.T) {
 	}{{"install", true, true}, {"daemon", false, true}}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			oldLookPath, oldCommand, oldConfirm := lookPath, commandFactory, confirmFunc
-			t.Cleanup(func() { lookPath, commandFactory, confirmFunc = oldLookPath, oldCommand, oldConfirm })
+			oldLookPath, oldCommand, oldConfirm, oldStat := lookPath, commandFactory, confirmFunc, statPath
+			t.Cleanup(func() { lookPath, commandFactory, confirmFunc, statPath = oldLookPath, oldCommand, oldConfirm, oldStat })
 			commandCalled := false
+			statPath = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
 			lookPath = func(name string) (string, error) {
 				if name == "ollama" && test.ollamaErr {
 					return "", os.ErrNotExist
@@ -138,6 +141,45 @@ func TestSetupConfirmationRejectionDoesNotInvokeOperation(t *testing.T) {
 		})
 	}
 }
+
+func TestSetupReusesStoppedOfficialAppWithoutHomebrewInstall(t *testing.T) {
+	writeOllamaConfig(t, closedLoopbackEndpoint(t), "qwen3.5:4b-q4_K_M")
+	oldLookPath, oldConfirm, oldStat := lookPath, confirmFunc, statPath
+	t.Cleanup(func() { lookPath, confirmFunc, statPath = oldLookPath, oldConfirm, oldStat })
+	lookPath = func(name string) (string, error) {
+		if name == "brew" {
+			t.Fatal("Homebrew was checked for an installed Ollama App")
+		}
+		return "", os.ErrNotExist
+	}
+	statPath = func(path string) (os.FileInfo, error) {
+		if path != officialOllamaAppExecutable {
+			t.Fatalf("unexpected app path: %s", path)
+		}
+		return executableFileInfo{}, nil
+	}
+	prompts := []string{}
+	confirmFunc = func(prompt string) bool {
+		prompts = append(prompts, prompt)
+		return false
+	}
+
+	if code := Run([]string{"setup"}, io.Discard, io.Discard); code != exitcode.Canceled {
+		t.Fatalf("code=%d prompts=%v", code, prompts)
+	}
+	if len(prompts) != 1 || !strings.Contains(prompts[0], "daemon") {
+		t.Fatalf("prompts=%v", prompts)
+	}
+}
+
+type executableFileInfo struct{}
+
+func (executableFileInfo) Name() string       { return "ollama" }
+func (executableFileInfo) Size() int64        { return 0 }
+func (executableFileInfo) Mode() os.FileMode  { return 0o755 }
+func (executableFileInfo) ModTime() time.Time { return time.Time{} }
+func (executableFileInfo) IsDir() bool        { return false }
+func (executableFileInfo) Sys() any           { return nil }
 
 func TestSetupUpdateModelPullsOnlyAfterApproval(t *testing.T) {
 	pulled := false
@@ -305,6 +347,19 @@ func writeOllamaConfig(t *testing.T, endpoint, model string) {
 	if err := os.WriteFile(filepath.Join(configHome, "commiter", "config.toml"), []byte(configText), 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func closedLoopbackEndpoint(t *testing.T) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return "http://" + address
 }
 
 func TestUnimplementedCommandArgumentsAreValidated(t *testing.T) {

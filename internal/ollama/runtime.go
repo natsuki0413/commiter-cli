@@ -50,12 +50,18 @@ func Open(ctx context.Context, values config.Values) (*Runtime, error) {
 
 // OpenForSetup connects to Ollama and starts a temporary daemon when needed,
 // but intentionally does not require the configured model to be installed.
-func OpenForSetup(ctx context.Context, values config.Values) (*Runtime, error) {
+func OpenForSetup(ctx context.Context, values config.Values, executable string) (*Runtime, error) {
 	client, err := New(values)
 	if err != nil {
 		return nil, err
 	}
-	return openWithoutModel(ctx, client, startDaemon)
+	starter := startDaemon
+	if executable != "" {
+		starter = func(endpoint *urlEndpoint) (managedProcess, error) {
+			return startDaemonExecutable(executable, endpoint)
+		}
+	}
+	return openWithoutModel(ctx, client, starter)
 }
 
 func openWithoutModel(ctx context.Context, client *Client, starter processStarter) (*Runtime, error) {
@@ -198,7 +204,11 @@ func startDaemon(endpoint *urlEndpoint) (managedProcess, error) {
 	if err != nil {
 		return nil, err
 	}
-	command := exec.Command(path, "serve")
+	return startDaemonExecutable(path, endpoint)
+}
+
+func startDaemonExecutable(executable string, endpoint *urlEndpoint) (managedProcess, error) {
+	command := exec.Command(executable, "serve")
 	command.Env = replaceEnv(os.Environ(), "OLLAMA_HOST", endpoint.host)
 	command.Stdin = nil
 	command.Stdout = io.Discard

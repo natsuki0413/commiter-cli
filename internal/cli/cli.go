@@ -24,8 +24,11 @@ var Version = "dev"
 
 var lookPath = exec.LookPath
 var commandFactory = exec.Command
+var statPath = os.Stat
 
 const doctorCapabilityTimeout = 2 * time.Minute
+
+const officialOllamaAppExecutable = "/Applications/Ollama.app/Contents/Resources/ollama"
 
 type options struct {
 	json            bool
@@ -104,11 +107,13 @@ func runSetup(args []string, printer *output.Printer) int {
 	probeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 	probeErr := client.Compatibility(probeCtx)
 	cancel()
+	executable := ""
 	if probeErr != nil {
 		if !ollama.IsConnectionRefused(probeErr) {
 			return fail(printer, probeErr)
 		}
-		if _, err := lookPath("ollama"); err != nil {
+		executable = installedOllamaExecutable()
+		if executable == "" {
 			if _, brewErr := lookPath("brew"); brewErr != nil {
 				return fail(printer, exitcode.New(exitcode.LLM, "Ollama is not installed and Homebrew is unavailable"))
 			}
@@ -119,12 +124,13 @@ func runSetup(args []string, printer *output.Printer) int {
 			if err := command.Run(); err != nil {
 				return fail(printer, exitcode.New(exitcode.LLM, "Ollama installation failed"))
 			}
+			executable = "ollama"
 		}
 		if !confirm("Ollama daemon is stopped. Start it temporarily? [y/N] ") {
 			return fail(printer, exitcode.New(exitcode.Canceled, "setup canceled"))
 		}
 	}
-	runtime, err := ollama.OpenForSetup(context.Background(), effective.Values)
+	runtime, err := ollama.OpenForSetup(context.Background(), effective.Values, executable)
 	if err != nil {
 		return fail(printer, err)
 	}
@@ -149,6 +155,17 @@ func runSetup(args []string, printer *output.Printer) int {
 		return finishSetup(printer, "Ollama setup completed")
 	}
 	return finishSetup(printer, "Ollama is ready")
+}
+
+func installedOllamaExecutable() string {
+	if path, err := lookPath("ollama"); err == nil {
+		return path
+	}
+	info, err := statPath(officialOllamaAppExecutable)
+	if err == nil && !info.IsDir() && info.Mode().Perm()&0o111 != 0 {
+		return officialOllamaAppExecutable
+	}
+	return ""
 }
 
 func runDoctor(args []string, printer *output.Printer) int {
