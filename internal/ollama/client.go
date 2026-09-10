@@ -19,9 +19,9 @@ import (
 
 const (
 	maxResponseBytes = 1 << 20
-	// Ollama 0.9.0 added the think flag; structured output, streaming control,
-	// and keep_alive were already available by then.
-	minimumSupportedVersion = "0.9.0"
+	// Ollama 0.18.2 is the minimum verified version for the required API
+	// features and the default qwen3.5 model.
+	minimumSupportedVersion = "0.18.2"
 )
 
 type Message struct {
@@ -96,15 +96,33 @@ func loopbackTransport(endpoint *url.URL) *http.Transport {
 			if err != nil || len(addresses) == 0 {
 				return nil, errors.New("cannot resolve Ollama loopback endpoint")
 			}
-			for _, resolved := range addresses {
-				if !resolved.IP.IsLoopback() {
-					return nil, errors.New("Ollama endpoint resolved outside loopback")
-				}
-			}
 			dialer := &net.Dialer{}
-			return dialer.DialContext(ctx, network, net.JoinHostPort(addresses[0].IP.String(), port))
+			return dialLoopbackAddresses(ctx, network, port, addresses, dialer.DialContext)
 		},
 	}
+}
+
+type dialContextFunc func(context.Context, string, string) (net.Conn, error)
+
+func dialLoopbackAddresses(ctx context.Context, network, port string, addresses []net.IPAddr, dial dialContextFunc) (net.Conn, error) {
+	if len(addresses) == 0 {
+		return nil, errors.New("cannot resolve Ollama loopback endpoint")
+	}
+	for _, resolved := range addresses {
+		if !resolved.IP.IsLoopback() {
+			return nil, errors.New("Ollama endpoint resolved outside loopback")
+		}
+	}
+
+	var lastErr error
+	for _, resolved := range addresses {
+		connection, err := dial(ctx, network, net.JoinHostPort(resolved.IP.String(), port))
+		if err == nil {
+			return connection, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
 }
 
 func rejectRedirect(_ *http.Request, _ []*http.Request) error {
