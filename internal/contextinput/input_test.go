@@ -9,8 +9,13 @@ import (
 
 func TestBuildPreservesCompleteInputInSnapshotOrder(t *testing.T) {
 	onePath, twoPath := "one.go", "two.bin"
+	oldMode, newMode, headID, worktreeID := "100644", "100755", "head-id", "worktree-id"
 	one := gitstate.Change{ID: "F001", Status: "M", NewPath: &onePath, Language: "Go", ChangeHash: "hash-1", WorktreeKind: "file"}
-	two := gitstate.Change{ID: "F002", Status: "?", NewPath: &twoPath, ChangeHash: "hash-2", WorktreeKind: "file", Binary: true, Opaque: true, Size: 42}
+	two := gitstate.Change{
+		ID: "F002", Status: "?", NewPath: &twoPath, OldMode: &oldMode, NewMode: &newMode,
+		HeadIdentity: &headID, WorktreeKind: "file", WorktreeID: &worktreeID,
+		ChangeHash: "hash-2", Binary: true, Vendor: true, Opaque: true, Size: 42, Staged: true, Unstaged: true,
+	}
 	snapshot := gitstate.Snapshot{Head: "head", Branch: "main", IndexIdentity: "index", Changes: []gitstate.Change{one, two}}
 	evidence := []syntax.Evidence{{Kind: "function_declaration", Name: "changed", StartLine: 1, EndLine: 2}}
 	document, err := Build(snapshot, []syntax.ChangeResult{
@@ -26,8 +31,18 @@ func TestBuildPreservesCompleteInputInSnapshotOrder(t *testing.T) {
 	if document.Files[0].ID != "F001" || document.Files[0].ChangeHash != "hash-1" || len(document.Files[0].Evidence) != 1 {
 		t.Fatalf("first file=%#v", document.Files[0])
 	}
-	if document.Files[1].ID != "F002" || !document.Files[1].Opaque || document.Files[1].RawDiff != "" {
+	if document.Files[1].ID != "F002" || !document.Files[1].Opaque || document.Files[1].RawDiff != "" ||
+		document.Files[1].OldMode == nil || *document.Files[1].OldMode != oldMode ||
+		document.Files[1].NewMode == nil || *document.Files[1].NewMode != newMode ||
+		document.Files[1].HeadIdentity == nil || *document.Files[1].HeadIdentity != headID ||
+		document.Files[1].WorktreeIdentity == nil || *document.Files[1].WorktreeIdentity != worktreeID ||
+		!document.Files[1].Vendor || !document.Files[1].Staged || !document.Files[1].Unstaged {
 		t.Fatalf("second file=%#v", document.Files[1])
+	}
+	oldMode = "changed-after-build"
+	worktreeID = "changed-after-build"
+	if *document.Files[1].OldMode != "100644" || *document.Files[1].WorktreeIdentity != "worktree-id" {
+		t.Fatalf("document aliases mutable snapshot metadata: %#v", document.Files[1])
 	}
 	encoded, err := JSONRenderer(document)
 	if err != nil || len(encoded) == 0 {
@@ -59,6 +74,7 @@ func TestBuildRejectsContentThatContradictsMode(t *testing.T) {
 	snapshot := gitstate.Snapshot{Changes: []gitstate.Change{change}}
 	for name, result := range map[string]syntax.ChangeResult{
 		"structural without evidence": {Change: change, Mode: syntax.ModeStructural},
+		"raw without diff":            {Change: change, Mode: syntax.ModeRawDiff},
 		"raw with evidence":           {Change: change, Mode: syntax.ModeRawDiff, Evidence: []syntax.Evidence{{Kind: "x"}}},
 		"metadata with content":       {Change: change, Mode: syntax.ModeMetadataOnly, RawDiff: "private"},
 	} {

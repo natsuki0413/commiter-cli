@@ -38,11 +38,12 @@ func Prepare(ctx context.Context, document Document, config BudgetConfig, render
 	}
 	original := cloneDocument(document)
 	current := cloneDocument(document)
+	if summarizer == nil {
+		standard := NewHierarchicalSummarizer()
+		summarizer = standard
+	}
 	for attempt, stage := range []SummaryStage{SummaryNone, SummaryFile, SummaryHunk, SummaryChunk} {
 		if stage != SummaryNone {
-			if summarizer == nil {
-				return Prepared{}, ErrTooLarge
-			}
 			next, err := summarizer.Summarize(ctx, stage, cloneDocument(current))
 			if err != nil {
 				return Prepared{}, fmt.Errorf("%s summary failed: %w", stage, err)
@@ -77,6 +78,10 @@ func cloneDocument(document Document) Document {
 		clone.Files[i] = file
 		clone.Files[i].OldPath = cloneString(file.OldPath)
 		clone.Files[i].NewPath = cloneString(file.NewPath)
+		clone.Files[i].OldMode = cloneString(file.OldMode)
+		clone.Files[i].NewMode = cloneString(file.NewMode)
+		clone.Files[i].HeadIdentity = cloneString(file.HeadIdentity)
+		clone.Files[i].WorktreeIdentity = cloneString(file.WorktreeIdentity)
 		clone.Files[i].Evidence = append([]syntax.Evidence(nil), file.Evidence...)
 	}
 	return clone

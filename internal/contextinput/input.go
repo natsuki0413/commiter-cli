@@ -19,20 +19,27 @@ type Repository struct {
 }
 
 type File struct {
-	ID           string            `json:"id"`
-	Status       string            `json:"status"`
-	OldPath      *string           `json:"old_path"`
-	NewPath      *string           `json:"new_path"`
-	Language     string            `json:"language"`
-	ChangeHash   string            `json:"change_hash"`
-	Size         int64             `json:"size"`
-	WorktreeKind string            `json:"worktree_kind"`
-	Binary       bool              `json:"binary"`
-	Opaque       bool              `json:"opaque"`
-	Mode         syntax.Mode       `json:"mode"`
-	Evidence     []syntax.Evidence `json:"evidence,omitempty"`
-	RawDiff      string            `json:"raw_diff,omitempty"`
-	Summary      string            `json:"summary,omitempty"`
+	ID               string            `json:"id"`
+	Status           string            `json:"status"`
+	OldPath          *string           `json:"old_path"`
+	NewPath          *string           `json:"new_path"`
+	OldMode          *string           `json:"old_mode"`
+	NewMode          *string           `json:"new_mode"`
+	HeadIdentity     *string           `json:"head_identity"`
+	WorktreeKind     string            `json:"worktree_kind"`
+	WorktreeIdentity *string           `json:"worktree_identity"`
+	Language         string            `json:"language"`
+	ChangeHash       string            `json:"change_hash"`
+	Size             int64             `json:"size"`
+	Binary           bool              `json:"binary"`
+	Vendor           bool              `json:"vendor"`
+	Opaque           bool              `json:"opaque"`
+	Staged           bool              `json:"staged"`
+	Unstaged         bool              `json:"unstaged"`
+	Mode             syntax.Mode       `json:"mode"`
+	Evidence         []syntax.Evidence `json:"evidence,omitempty"`
+	RawDiff          string            `json:"raw_diff,omitempty"`
+	Summary          string            `json:"summary,omitempty"`
 }
 
 type Document struct {
@@ -81,9 +88,12 @@ func Build(snapshot gitstate.Snapshot, results []syntax.ChangeResult) (Document,
 			return Document{}, fmt.Errorf("file %s: %w", change.ID, err)
 		}
 		document.Files = append(document.Files, File{
-			ID: change.ID, Status: change.Status, OldPath: change.OldPath, NewPath: change.NewPath,
-			Language: change.Language, ChangeHash: change.ChangeHash, Size: change.Size, WorktreeKind: change.WorktreeKind,
-			Binary: change.Binary, Opaque: change.Opaque, Mode: result.Mode,
+			ID: change.ID, Status: change.Status, OldPath: cloneString(change.OldPath), NewPath: cloneString(change.NewPath),
+			OldMode: cloneString(change.OldMode), NewMode: cloneString(change.NewMode), HeadIdentity: cloneString(change.HeadIdentity),
+			WorktreeKind: change.WorktreeKind, WorktreeIdentity: cloneString(change.WorktreeID),
+			Language: change.Language, ChangeHash: change.ChangeHash, Size: change.Size,
+			Binary: change.Binary, Vendor: change.Vendor, Opaque: change.Opaque,
+			Staged: change.Staged, Unstaged: change.Unstaged, Mode: result.Mode,
 			Evidence: append([]syntax.Evidence(nil), result.Evidence...), RawDiff: result.RawDiff,
 		})
 	}
@@ -97,8 +107,8 @@ func validateMode(result syntax.ChangeResult) error {
 			return errors.New("structural input must contain evidence and no raw diff")
 		}
 	case syntax.ModeRawDiff:
-		if len(result.Evidence) != 0 {
-			return errors.New("raw-diff input must not contain structural evidence")
+		if len(result.Evidence) != 0 || result.RawDiff == "" {
+			return errors.New("raw-diff input must contain a diff and no structural evidence")
 		}
 	case syntax.ModeMetadataOnly:
 		if len(result.Evidence) != 0 || result.RawDiff != "" {
