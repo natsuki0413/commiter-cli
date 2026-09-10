@@ -8,7 +8,9 @@
 
 Go モジュール、CLI の入口、設定解決、共通の終了コードと安全な出力境界を実装しています。commit 計画、Git 変更、Ollama 連携などの機能本体は未実装で、実行しても成功扱いにはなりません。
 
-詳細な要件は [SOFTWARE_REQUIREMENTS_SPECIFICATION.md](SOFTWARE_REQUIREMENTS_SPECIFICATION.md) に記載します。
+詳細な要件は [日本語](SOFTWARE_REQUIREMENTS_SPECIFICATION.md) | [English](SOFTWARE_REQUIREMENTS_SPECIFICATION_en.md) で確認できます。
+
+コントリビューションガイドは [English](CONTRIBUTING.md) | [日本語](CONTRIBUTING_ja.md) を参照してください。
 
 ## 対象環境
 
