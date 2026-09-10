@@ -57,6 +57,8 @@ type Result struct {
 	Evidence []Evidence `json:"evidence,omitempty"`
 }
 
+var ErrStaleContent = errors.New("content does not match the collected Git state")
+
 // ChangeInput joins the approved bytes and diff hunks to the immutable Git
 // metadata collected by gitstate. RawDiff must contain only the changed hunks
 // that are safe to send to the local model.
@@ -158,7 +160,7 @@ func AnalyzeChange(input ChangeInput) (ChangeResult, error) {
 	}
 	digest := sha256.Sum256(input.Content)
 	if hex.EncodeToString(digest[:]) != *input.Change.WorktreeID {
-		return ChangeResult{}, errors.New("content does not match the collected Git state")
+		return ChangeResult{}, ErrStaleContent
 	}
 	analysis := Analyze(Input{
 		Language: input.Change.Language,

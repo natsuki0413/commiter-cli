@@ -3,6 +3,7 @@ package syntax
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"testing"
 
 	"github.com/natsuki0413/commiter-cli/internal/gitstate"
@@ -184,8 +185,8 @@ func TestAnalyzeChangeUsesApprovedSensitiveStateAndRejectsStaleContent(t *testin
 		t.Fatalf("approved sensitive result = %#v", result)
 	}
 
-	if _, err := AnalyzeChange(ChangeInput{Change: change, Content: []byte("package changed\n"), Hunks: []Hunk{{1, 1}}}); err == nil {
-		t.Fatal("stale content was accepted")
+	if _, err := AnalyzeChange(ChangeInput{Change: change, Content: []byte("package changed\n"), Hunks: []Hunk{{1, 1}}}); !errors.Is(err, ErrStaleContent) {
+		t.Fatalf("stale content error = %v", err)
 	}
 	missingIdentity := change
 	missingIdentity.WorktreeID = nil
