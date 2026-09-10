@@ -350,10 +350,11 @@ func runMain(opts options, printer *output.Printer) int {
 	if err != nil {
 		return fail(printer, exitcode.New(exitcode.Usage, err.Error()))
 	}
-	if _, err := config.Resolve(paths.GlobalConfig, paths.RepoConfig, root, overrides(opts)); err != nil {
+	effective, err := config.Resolve(paths.GlobalConfig, paths.RepoConfig, root, overrides(opts))
+	if err != nil {
 		return fail(printer, exitcode.New(exitcode.Usage, err.Error()))
 	}
-	return fail(printer, exitcode.New(exitcode.Internal, "commit planning is not implemented yet"))
+	return runCollection(opts, root, effective.Values, printer)
 }
 
 func overrides(opts options) config.CLIOverrides {
