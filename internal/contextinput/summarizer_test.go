@@ -40,6 +40,38 @@ func TestHierarchicalSummarizerCompressesFileHunkAndChunk(t *testing.T) {
 	}
 }
 
+func TestHierarchicalSummarizerPreservesChangedLinesThatLookLikeFileHeaders(t *testing.T) {
+	raw := "diff --git a/main.txt b/main.txt\nindex 123..456 100644\n--- a/main.txt\n+++ b/main.txt\n@@ -1 +1 @@\n--- comment\n+++ counter\n"
+	summarizer := NewHierarchicalSummarizer()
+
+	fileSummary, err := summarizer.Summarize(context.Background(), SummaryFile, rawDocument(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(fileSummary.Files[0].Summary, "--- a/main.txt") || strings.Contains(fileSummary.Files[0].Summary, "+++ b/main.txt") {
+		t.Fatalf("file headers were retained: %q", fileSummary.Files[0].Summary)
+	}
+	for _, changedLine := range []string{"--- comment", "+++ counter"} {
+		if !strings.Contains(fileSummary.Files[0].Summary, changedLine) {
+			t.Fatalf("changed line %q was removed from %q", changedLine, fileSummary.Files[0].Summary)
+		}
+	}
+
+	hunkSummary, err := summarizer.Summarize(context.Background(), SummaryHunk, fileSummary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunkSummary, err := summarizer.Summarize(context.Background(), SummaryChunk, hunkSummary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"additions=1", "deletions=1", "added: ++ counter", "removed: -- comment"} {
+		if !strings.Contains(chunkSummary.Files[0].Summary, want) {
+			t.Fatalf("chunk summary=%q missing %q", chunkSummary.Files[0].Summary, want)
+		}
+	}
+}
+
 func TestHierarchicalSummarizerLeavesStructuralAndMetadataOnlyFilesUntouched(t *testing.T) {
 	document := testDocument()
 	document.Files = append(document.Files, File{ID: "F002", ChangeHash: "hash-2", Mode: syntax.ModeMetadataOnly, Opaque: true})

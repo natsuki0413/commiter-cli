@@ -80,8 +80,12 @@ func (s HierarchicalSummarizer) validate() error {
 func summarizeFile(source string) string {
 	lines := splitLines(source)
 	kept := make([]string, 0, len(lines))
+	inHeader := true
 	for _, line := range lines {
-		if redundantFileHeader(line) {
+		if strings.HasPrefix(line, "@@") {
+			inHeader = false
+		}
+		if inHeader && redundantFileHeader(line) {
 			continue
 		}
 		kept = append(kept, line)
@@ -137,13 +141,13 @@ func (s HierarchicalSummarizer) chunkSummary(number int, lines []string) []strin
 	addedExcerpts, deletedExcerpts := 0, 0
 	for _, line := range lines {
 		switch {
-		case strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++ "):
+		case strings.HasPrefix(line, "+"):
 			additions++
 			if addedExcerpts < s.ExcerptLines {
 				excerpts = append(excerpts, "added: "+truncateUTF8(strings.TrimPrefix(line, "+"), s.ExcerptBytes))
 				addedExcerpts++
 			}
-		case strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "--- "):
+		case strings.HasPrefix(line, "-"):
 			deletions++
 			if deletedExcerpts < s.ExcerptLines {
 				excerpts = append(excerpts, "removed: "+truncateUTF8(strings.TrimPrefix(line, "-"), s.ExcerptBytes))
