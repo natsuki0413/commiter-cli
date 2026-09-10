@@ -68,6 +68,8 @@ func TestValidateRejectsEverySchemaAndAssignmentClass(t *testing.T) {
 	tests := map[string]string{
 		"invalid JSON":          `not-json`,
 		"unknown body":          `{"schema_version":1,"commits":[{"type":"fix","scope":"x","breaking":false,"summary":"s","body":"no","file_ids":["F001","F002"]}]}`,
+		"missing breaking":      `{"schema_version":1,"commits":[{"type":"fix","scope":"x","summary":"s","file_ids":["F001","F002"]}]}`,
+		"null breaking":         `{"schema_version":1,"commits":[{"type":"fix","scope":"x","breaking":null,"summary":"s","file_ids":["F001","F002"]}]}`,
 		"invalid type":          `{"schema_version":1,"commits":[{"type":"feature","scope":"x","breaking":false,"summary":"s","file_ids":["F001","F002"]}]}`,
 		"empty scope":           `{"schema_version":1,"commits":[{"type":"fix","scope":" ","breaking":false,"summary":"s","file_ids":["F001","F002"]}]}`,
 		"multiline scope":       "{\"schema_version\":1,\"commits\":[{\"type\":\"fix\",\"scope\":\"x\\ny\",\"breaking\":false,\"summary\":\"s\",\"file_ids\":[\"F001\",\"F002\"]}]}",
@@ -84,6 +86,29 @@ func TestValidateRejectsEverySchemaAndAssignmentClass(t *testing.T) {
 				t.Fatal("invalid candidate was accepted")
 			}
 		})
+	}
+}
+
+func TestValidateRequiresBooleanBreaking(t *testing.T) {
+	for name, candidate := range map[string]string{
+		"missing": `{"schema_version":1,"commits":[{"type":"fix","scope":"x","summary":"s","file_ids":["F001","F002"]}]}`,
+		"null":    `{"schema_version":1,"commits":[{"type":"fix","scope":"x","breaking":null,"summary":"s","file_ids":["F001","F002"]}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, violations := Validate([]byte(candidate), []string{"F001", "F002"}, SensitiveValues{})
+			if !containsViolation(violations, InvalidSchema) {
+				t.Fatalf("violations=%v", violations)
+			}
+		})
+	}
+}
+
+func TestValidateRejectsSensitiveValueAfterJSONUnescaping(t *testing.T) {
+	sensitive := ExtractSensitiveValues([]byte(`token = "secret123"`))
+	candidate := []byte(`{"schema_version":1,"commits":[{"type":"fix","scope":"planner","breaking":false,"summary":"\u0073ecret123","file_ids":["F001","F002"]}]}`)
+	_, violations := Validate(candidate, []string{"F001", "F002"}, sensitive)
+	if !containsViolation(violations, SensitiveOutput) {
+		t.Fatalf("violations=%v", violations)
 	}
 }
 
@@ -110,6 +135,24 @@ func TestSensitiveExtractionCoversSpecifiedFormsAndExactBytes(t *testing.T) {
 	encoded, err := json.Marshal(sensitive)
 	if err != nil || strings.Contains(string(encoded), "JsonSecret") {
 		t.Fatalf("sensitive values are serializable: %s, %v", encoded, err)
+	}
+}
+
+func TestSensitiveExtractionHandlesInlineCommentsWithoutIncludingThem(t *testing.T) {
+	sensitive := ExtractSensitiveValues([]byte(strings.Join([]string{
+		`token = "QuotedSecret" # production token`,
+		`password: PlainSecret # local only`,
+		`client_secret = "Hash#Inside" # comment`,
+	}, "\n")))
+	for _, value := range []string{"QuotedSecret", "PlainSecret", "Hash#Inside"} {
+		if !sensitive.Contains([]byte("summary " + value)) {
+			t.Fatalf("did not extract %q", value)
+		}
+	}
+	for _, value := range sensitive.values {
+		if string(value) == `"QuotedSecret" # production token` {
+			t.Fatal("inline comment was included in the extracted value")
+		}
 	}
 }
 

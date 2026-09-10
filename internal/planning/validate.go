@@ -14,16 +14,28 @@ func Validate(candidate []byte, fileIDs []string, sensitive SensitiveValues) (Pl
 	if !json.Valid(candidate) {
 		violations = append(violations, InvalidJSON)
 	} else {
+		var decoded wirePlan
 		decoder := json.NewDecoder(bytes.NewReader(candidate))
 		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&plan); err != nil {
+		if err := decoder.Decode(&decoded); err != nil {
 			violations = append(violations, InvalidSchema)
 		} else if err := requireEOF(decoder); err != nil {
 			violations = append(violations, InvalidJSON)
+		} else {
+			var valid bool
+			plan, valid = decoded.plan()
+			if !valid {
+				violations = append(violations, InvalidSchema)
+			}
 		}
 	}
 	if sensitive.Contains(candidate) {
 		violations = append(violations, SensitiveOutput)
+	}
+	for _, commit := range plan.Commits {
+		if sensitive.Contains([]byte(commit.Scope)) || sensitive.Contains([]byte(commit.Summary)) {
+			violations = append(violations, SensitiveOutput)
+		}
 	}
 	if containsViolation(violations, InvalidJSON) || containsViolation(violations, InvalidSchema) {
 		return Plan{}, uniqueViolations(violations)
@@ -53,6 +65,35 @@ func Validate(candidate []byte, fileIDs []string, sensitive SensitiveValues) (Pl
 		violations = append(violations, InvalidAssignment)
 	}
 	return plan, uniqueViolations(violations)
+}
+
+type wirePlan struct {
+	SchemaVersion int          `json:"schema_version"`
+	Commits       []wireCommit `json:"commits"`
+}
+
+type wireCommit struct {
+	Type     string          `json:"type"`
+	Scope    string          `json:"scope"`
+	Breaking json.RawMessage `json:"breaking"`
+	Summary  string          `json:"summary"`
+	FileIDs  []string        `json:"file_ids"`
+}
+
+func (decoded wirePlan) plan() (Plan, bool) {
+	plan := Plan{SchemaVersion: decoded.SchemaVersion, Commits: make([]Commit, len(decoded.Commits))}
+	valid := true
+	for index, source := range decoded.Commits {
+		var breaking bool
+		if len(source.Breaking) == 0 || bytes.Equal(bytes.TrimSpace(source.Breaking), []byte("null")) || json.Unmarshal(source.Breaking, &breaking) != nil {
+			valid = false
+		}
+		plan.Commits[index] = Commit{
+			Type: source.Type, Scope: source.Scope, Breaking: breaking,
+			Summary: source.Summary, FileIDs: source.FileIDs,
+		}
+	}
+	return plan, valid
 }
 
 func requireEOF(decoder *json.Decoder) error {

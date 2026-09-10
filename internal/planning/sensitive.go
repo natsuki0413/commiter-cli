@@ -111,10 +111,31 @@ func toString(value any) string {
 
 func scalarValue(value []byte) []byte {
 	trimmed := bytes.TrimSpace(value)
-	if len(trimmed) >= 2 && ((trimmed[0] == '"' && trimmed[len(trimmed)-1] == '"') || (trimmed[0] == '\'' && trimmed[len(trimmed)-1] == '\'')) {
-		trimmed = trimmed[1 : len(trimmed)-1]
+	if len(trimmed) == 0 {
+		return nil
 	}
-	return trimmed
+	if trimmed[0] == '"' || trimmed[0] == '\'' {
+		quote := trimmed[0]
+		escaped := false
+		for index := 1; index < len(trimmed); index++ {
+			switch {
+			case escaped:
+				escaped = false
+			case trimmed[index] == '\\':
+				escaped = true
+			case trimmed[index] == quote:
+				return trimmed[1:index]
+			}
+		}
+		return bytes.TrimSpace(trimmed[1:])
+	}
+	for index, current := range trimmed {
+		if current == '#' && (index == 0 || trimmed[index-1] == ' ' || trimmed[index-1] == '\t') {
+			trimmed = bytes.TrimSpace(trimmed[:index])
+			break
+		}
+	}
+	return bytes.TrimSpace(bytes.TrimSuffix(trimmed, []byte(",")))
 }
 
 func addSensitive(values *[][]byte, value []byte) {
