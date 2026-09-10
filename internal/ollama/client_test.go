@@ -136,7 +136,7 @@ func TestCompatibilityAndModelFailuresAreLLMErrorsWithoutPull(t *testing.T) {
 		paths = append(paths, request.URL.Path)
 		switch request.URL.Path {
 		case "/api/version":
-			return jsonResponse(http.StatusOK, `{"version":"0.18.2"}`), nil
+			return jsonResponse(http.StatusOK, `{"version":"0.31.2"}`), nil
 		case "/api/tags":
 			return jsonResponse(http.StatusOK, `{"models":[]}`), nil
 		default:
@@ -175,10 +175,10 @@ func TestCompatibilityRequiresVersionWithNeededFeatures(t *testing.T) {
 		version string
 		wantErr bool
 	}{
-		{version: "0.18.1", wantErr: true},
-		{version: "0.18.2-rc1", wantErr: true},
-		{version: "0.18.2"},
-		{version: "0.19.0"},
+		{version: "0.31.1", wantErr: true},
+		{version: "0.31.2-rc1", wantErr: true},
+		{version: "0.31.2"},
+		{version: "0.31.3"},
 		{version: "1.0.0+build"},
 		{version: "foo", wantErr: true},
 	}

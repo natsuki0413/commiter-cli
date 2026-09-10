@@ -113,7 +113,7 @@ func readyClient() *Client {
 func readyResponse(request *http.Request) *http.Response {
 	switch request.URL.Path {
 	case "/api/version":
-		return jsonResponse(http.StatusOK, `{"version":"0.18.2"}`)
+		return jsonResponse(http.StatusOK, `{"version":"0.31.2"}`)
 	case "/api/tags":
 		return jsonResponse(http.StatusOK, `{"models":[{"name":"model:latest","model":"model:latest"}]}`)
 	default:

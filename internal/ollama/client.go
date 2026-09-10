@@ -19,9 +19,9 @@ import (
 
 const (
 	maxResponseBytes = 1 << 20
-	// Ollama 0.18.2 is the minimum verified version for the required API
-	// features and the default qwen3.5 model.
-	minimumSupportedVersion = "0.18.2"
+	// Ollama 0.31.2 fixed structured output for thinking models when thinking
+	// is disabled, which is the request mode used with the default qwen3.5 model.
+	minimumSupportedVersion = "0.31.2"
 )
 
 type Message struct {
