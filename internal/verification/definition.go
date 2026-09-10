@@ -169,10 +169,14 @@ func autodetect(root string) (*Definition, error) {
 		if !exists {
 			continue
 		}
+		argv, ok := autodetectArgv(manager, name, manifest.Scripts)
+		if !ok {
+			continue
+		}
 		commands = append(commands, Command{
 			Name:         name,
 			CWD:          ".",
-			Argv:         []string{manager, "run", name},
+			Argv:         argv,
 			ManifestPath: "package.json",
 			ScriptName:   name,
 			ScriptBody:   body,
@@ -182,6 +186,25 @@ func autodetect(root string) (*Definition, error) {
 		return nil, nil
 	}
 	return &Definition{SchemaVersion: 1, SourceType: SourcePackageJSONAutodetect, Commands: commands}, nil
+}
+
+func autodetectArgv(manager, name string, scripts map[string]string) ([]string, bool) {
+	switch manager {
+	case "npm":
+		return []string{"npm", "run", "--ignore-scripts", name}, true
+	case "pnpm":
+		return []string{"pnpm", "--config.enable-pre-post-scripts=false", "run", name}, true
+	case "yarn", "bun":
+		if _, exists := scripts["pre"+name]; exists {
+			return nil, false
+		}
+		if _, exists := scripts["post"+name]; exists {
+			return nil, false
+		}
+		return []string{manager, "run", name}, true
+	default:
+		return nil, false
+	}
 }
 
 func packageManager(root, declared string) (string, bool, error) {

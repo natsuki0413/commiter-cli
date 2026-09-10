@@ -74,12 +74,45 @@ func TestResolveAutodetectsOnlyOrderedRootScripts(t *testing.T) {
 	wantNames := []string{"lint", "typecheck", "test", "build"}
 	for index, wantName := range wantNames {
 		command := definition.Commands[index]
-		if command.Name != wantName || !reflect.DeepEqual(command.Argv, []string{"pnpm", "run", wantName}) {
+		if command.Name != wantName || !reflect.DeepEqual(command.Argv, []string{"pnpm", "--config.enable-pre-post-scripts=false", "run", wantName}) {
 			t.Fatalf("command[%d] = %#v", index, command)
 		}
 		if command.CWD != "." || command.ManifestPath != "package.json" || command.ScriptName != wantName || command.ScriptBody == "" {
 			t.Fatalf("autodetect metadata[%d] = %#v", index, command)
 		}
+	}
+}
+
+func TestResolveAutodetectDisablesImplicitLifecycleScripts(t *testing.T) {
+	tests := []struct {
+		name        string
+		manager     string
+		wantArgv    []string
+		wantCommand bool
+	}{
+		{name: "npm", manager: "npm@10", wantArgv: []string{"npm", "run", "--ignore-scripts", "test"}, wantCommand: true},
+		{name: "pnpm", manager: "pnpm@9", wantArgv: []string{"pnpm", "--config.enable-pre-post-scripts=false", "run", "test"}, wantCommand: true},
+		{name: "yarn", manager: "yarn@1", wantCommand: false},
+		{name: "bun", manager: "bun@1", wantCommand: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFile(t, filepath.Join(root, "package.json"), `{"packageManager":"`+test.manager+`","scripts":{"pretest":"unapproved","test":"vitest","posttest":"unapproved"}}`)
+			definition, err := Resolve(root, config.Values{Autodetect: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !test.wantCommand {
+				if definition != nil {
+					t.Fatalf("definition = %#v, want nil", definition)
+				}
+				return
+			}
+			if definition == nil || len(definition.Commands) != 1 || !reflect.DeepEqual(definition.Commands[0].Argv, test.wantArgv) {
+				t.Fatalf("definition = %#v, want argv %#v", definition, test.wantArgv)
+			}
+		})
 	}
 }
 
@@ -165,7 +198,7 @@ func TestHashChangesWithEveryAdoptedDefinitionField(t *testing.T) {
 			{
 				Name:         "lint",
 				CWD:          ".",
-				Argv:         []string{"npm", "run", "lint"},
+				Argv:         []string{"npm", "run", "--ignore-scripts", "lint"},
 				ManifestPath: "package.json",
 				ScriptName:   "lint",
 				ScriptBody:   "eslint .",
@@ -173,7 +206,7 @@ func TestHashChangesWithEveryAdoptedDefinitionField(t *testing.T) {
 			{
 				Name:         "test",
 				CWD:          ".",
-				Argv:         []string{"npm", "run", "test"},
+				Argv:         []string{"npm", "run", "--ignore-scripts", "test"},
 				ManifestPath: "package.json",
 				ScriptName:   "test",
 				ScriptBody:   "vitest",
@@ -227,7 +260,7 @@ func TestCanonicalJSONIncludesEmptyAutodetectScriptBodyOnlyForAutodetect(t *test
 		SchemaVersion: 1,
 		SourceType:    SourcePackageJSONAutodetect,
 		Commands: []Command{{
-			Name: "test", CWD: ".", Argv: []string{"npm", "run", "test"},
+			Name: "test", CWD: ".", Argv: []string{"npm", "run", "--ignore-scripts", "test"},
 			ManifestPath: "package.json", ScriptName: "test", ScriptBody: "",
 		}},
 	}
@@ -293,7 +326,7 @@ func TestPackageManagerChangeAltersFinalArgvAndHash(t *testing.T) {
 
 func TestSymlinkAndRealRootProduceSameDefinition(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, "package.json"), `{"packageManager":"bun@1","scripts":{"test":"bun test"}}`)
+	writeFile(t, filepath.Join(root, "package.json"), `{"packageManager":"npm@10","scripts":{"test":"npm test"}}`)
 	link := filepath.Join(t.TempDir(), "repo-link")
 	if err := os.Symlink(root, link); err != nil {
 		t.Fatal(err)

@@ -3,10 +3,12 @@ package cli
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
 
+	"github.com/natsuki0413/commiter-cli/internal/exitcode"
 	"github.com/natsuki0413/commiter-cli/internal/output"
 	"github.com/natsuki0413/commiter-cli/internal/trust"
 	"github.com/natsuki0413/commiter-cli/internal/verification"
@@ -20,7 +22,7 @@ func authorizeVerificationDefinition(repo, stateDir string, definition *verifica
 		return printer.Lines("Verification: none")
 	}
 	store := trust.New(stateDir)
-	return verification.Authorize(repo, definition, store, func(request verification.ApprovalRequest) (bool, error) {
+	err := verification.Authorize(repo, definition, store, func(request verification.ApprovalRequest) (bool, error) {
 		lines := []string{
 			"Verification approval required",
 			"source_type: " + request.Definition.SourceType,
@@ -59,4 +61,8 @@ func authorizeVerificationDefinition(repo, stateDir string, definition *verifica
 		}
 		return strings.EqualFold(strings.TrimSpace(scanner.Text()), "y"), nil
 	})
+	if errors.Is(err, verification.ErrNotApproved) {
+		return exitcode.New(exitcode.Canceled, "verification approval canceled")
+	}
+	return err
 }

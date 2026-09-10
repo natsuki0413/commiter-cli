@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/natsuki0413/commiter-cli/internal/exitcode"
 	"github.com/natsuki0413/commiter-cli/internal/output"
 	"github.com/natsuki0413/commiter-cli/internal/trust"
 	"github.com/natsuki0413/commiter-cli/internal/verification"
@@ -32,7 +33,7 @@ func TestAuthorizeVerificationDefinitionDisplaysAndPersistsFullDefinition(t *tes
 		Commands: []verification.Command{{
 			Name:         "test",
 			CWD:          ".",
-			Argv:         []string{"npm", "run", "test"},
+			Argv:         []string{"npm", "run", "--ignore-scripts", "test"},
 			ManifestPath: "package.json",
 			ScriptName:   "test",
 			ScriptBody:   "vitest run",
@@ -47,7 +48,7 @@ func TestAuthorizeVerificationDefinitionDisplaysAndPersistsFullDefinition(t *tes
 		"source_type: package_json_autodetect",
 		"command: test",
 		"cwd: .",
-		`argv: [\"npm\",\"run\",\"test\"]`,
+		`argv: [\"npm\",\"run\",\"--ignore-scripts\",\"test\"]`,
 		"manifest_path: package.json",
 		"script_name: test",
 		"script_body: vitest run",
@@ -73,5 +74,23 @@ func TestAuthorizeVerificationDefinitionDisplaysAndPersistsFullDefinition(t *tes
 	err = authorizeVerificationDefinition(repo, stateDir, definition, strings.NewReader(""), output.New(&stdout, &stderr, false))
 	if err != nil || stdout.Len() != 0 {
 		t.Fatalf("trusted error = %v, stdout = %q", err, stdout.String())
+	}
+}
+
+func TestAuthorizeVerificationDefinitionMapsDenialToCanceled(t *testing.T) {
+	repo, stateDir := t.TempDir(), t.TempDir()
+	definition := &verification.Definition{
+		SchemaVersion: 1,
+		SourceType:    verification.SourceRepoConfig,
+		Commands:      []verification.Command{{Name: "test", CWD: ".", Argv: []string{"go", "test", "./..."}}},
+	}
+	var stdout, stderr bytes.Buffer
+	err := authorizeVerificationDefinition(repo, stateDir, definition, strings.NewReader("n\n"), output.New(&stdout, &stderr, false))
+	if exitcode.Code(err) != exitcode.Canceled {
+		t.Fatalf("error = %v, code = %d", err, exitcode.Code(err))
+	}
+	entries, listErr := trust.New(stateDir).List()
+	if listErr != nil || len(entries) != 0 {
+		t.Fatalf("entries = %#v, error = %v", entries, listErr)
 	}
 }
