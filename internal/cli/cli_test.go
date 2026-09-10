@@ -314,9 +314,15 @@ func TestDoctorProbesStructuredOutputAndThinking(t *testing.T) {
 	}))
 	defer server.Close()
 	writeOllamaConfig(t, server.URL, "qwen3.5:4b-q4_K_M")
-	oldLookPath := lookPath
-	t.Cleanup(func() { lookPath = oldLookPath })
-	lookPath = func(string) (string, error) { return "/ollama", nil }
+	oldLookPath, oldStat := lookPath, statPath
+	t.Cleanup(func() { lookPath, statPath = oldLookPath, oldStat })
+	lookPath = func(string) (string, error) { return "", exec.ErrNotFound }
+	statPath = func(path string) (os.FileInfo, error) {
+		if path != officialOllamaAppExecutable {
+			return nil, os.ErrNotExist
+		}
+		return executableFileInfo{}, nil
+	}
 
 	var stdout, stderr bytes.Buffer
 	if code := Run([]string{"--json", "doctor"}, &stdout, &stderr); code == exitcode.Usage {
@@ -330,7 +336,7 @@ func TestDoctorProbesStructuredOutputAndThinking(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if !result.Doctor["structured_output"].OK || !result.Doctor["thinking"].OK || probe["think"] != false {
+	if !result.Doctor["ollama_binary"].OK || !result.Doctor["structured_output"].OK || !result.Doctor["thinking"].OK || probe["think"] != false {
 		t.Fatalf("doctor=%#v probe=%#v", result.Doctor, probe)
 	}
 }

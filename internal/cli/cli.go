@@ -173,8 +173,12 @@ func runDoctor(args []string, printer *output.Printer) int {
 		return fail(printer, exitcode.New(exitcode.Usage, "doctor does not accept arguments"))
 	}
 	checks := map[string]any{}
-	_, ollamaErr := lookPath("ollama")
-	checks["ollama_binary"] = check(ollamaErr == nil, message(ollamaErr, "Ollama executable available"))
+	ollamaExecutable := installedOllamaExecutable()
+	ollamaMessage := "Ollama executable unavailable"
+	if ollamaExecutable != "" {
+		ollamaMessage = "Ollama executable available"
+	}
+	checks["ollama_binary"] = check(ollamaExecutable != "", ollamaMessage)
 	root, rootErr := repository.Root()
 	checks["git"] = check(rootErr == nil, message(rootErr, "repository detected"))
 	if rootErr == nil {
