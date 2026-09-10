@@ -48,17 +48,43 @@ func Open(ctx context.Context, values config.Values) (*Runtime, error) {
 	return open(ctx, client, startDaemon)
 }
 
+// OpenForSetup connects to Ollama and starts a temporary daemon when needed,
+// but intentionally does not require the configured model to be installed.
+func OpenForSetup(ctx context.Context, values config.Values, executable string) (*Runtime, error) {
+	client, err := New(values)
+	if err != nil {
+		return nil, err
+	}
+	starter := startDaemon
+	if executable != "" {
+		starter = func(endpoint *urlEndpoint) (managedProcess, error) {
+			return startDaemonExecutable(executable, endpoint)
+		}
+	}
+	return openWithoutModel(ctx, client, starter)
+}
+
+func openWithoutModel(ctx context.Context, client *Client, starter processStarter) (*Runtime, error) {
+	return openWithProbe(ctx, client, starter, existingProbeTimeout, false)
+}
+
 func open(ctx context.Context, client *Client, starter processStarter) (*Runtime, error) {
 	return openWithProbeTimeout(ctx, client, starter, existingProbeTimeout)
 }
 
 func openWithProbeTimeout(ctx context.Context, client *Client, starter processStarter, timeout time.Duration) (*Runtime, error) {
+	return openWithProbe(ctx, client, starter, timeout, true)
+}
+
+func openWithProbe(ctx context.Context, client *Client, starter processStarter, timeout time.Duration, requireInstalledModel bool) (*Runtime, error) {
 	probeContext, cancelProbe := context.WithTimeout(ctx, timeout)
 	compatibilityErr := client.Compatibility(probeContext)
 	if compatibilityErr == nil {
-		if err := requireModel(probeContext, client); err != nil {
-			cancelProbe()
-			return nil, err
+		if requireInstalledModel {
+			if err := requireModel(probeContext, client); err != nil {
+				cancelProbe()
+				return nil, err
+			}
 		}
 		cancelProbe()
 		return &Runtime{Client: client, closed: make(chan struct{})}, nil
@@ -85,9 +111,11 @@ func openWithProbeTimeout(ctx context.Context, client *Client, starter processSt
 	defer cancel()
 	for {
 		if err := client.Compatibility(startupContext); err == nil {
-			if err := requireModel(startupContext, client); err != nil {
-				_ = runtime.Close()
-				return nil, err
+			if requireInstalledModel {
+				if err := requireModel(startupContext, client); err != nil {
+					_ = runtime.Close()
+					return nil, err
+				}
 			}
 			return runtime, nil
 		} else if !isTransportError(err) {
@@ -125,6 +153,10 @@ func isTransportError(err error) bool {
 func isConnectionRefused(err error) bool {
 	return isTransportError(err) && errors.Is(err, syscall.ECONNREFUSED)
 }
+
+// IsConnectionRefused distinguishes a stopped local daemon from API or version
+// incompatibility so callers do not offer an irrelevant start operation.
+func IsConnectionRefused(err error) bool { return isConnectionRefused(err) }
 
 func (r *Runtime) OwnedDaemon() bool {
 	return r != nil && r.owned != nil
@@ -172,7 +204,11 @@ func startDaemon(endpoint *urlEndpoint) (managedProcess, error) {
 	if err != nil {
 		return nil, err
 	}
-	command := exec.Command(path, "serve")
+	return startDaemonExecutable(path, endpoint)
+}
+
+func startDaemonExecutable(executable string, endpoint *urlEndpoint) (managedProcess, error) {
+	command := exec.Command(executable, "serve")
 	command.Env = replaceEnv(os.Environ(), "OLLAMA_HOST", endpoint.host)
 	command.Stdin = nil
 	command.Stdout = io.Discard
