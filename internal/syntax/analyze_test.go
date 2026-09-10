@@ -1,6 +1,10 @@
 package syntax
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/natsuki0413/commiter-cli/internal/gitstate"
+)
 
 func TestAnalyzeAllSupportedLanguages(t *testing.T) {
 	tests := []struct{ language, source, kind string }{
@@ -17,7 +21,7 @@ func TestAnalyzeAllSupportedLanguages(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.language, func(t *testing.T) {
 			result := Analyze(Input{Language: test.language, Content: []byte(test.source), Hunks: []Hunk{{StartLine: 1, EndLine: 999}}})
-			if !result.Supported || result.Fallback || len(result.Evidence) == 0 {
+			if result.Mode != ModeStructural || len(result.Evidence) == 0 {
 				t.Fatalf("result = %#v", result)
 			}
 			found := false
@@ -43,7 +47,7 @@ func TestAnalyzeFallsBackLocally(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			result := Analyze(input)
-			if !result.Fallback || len(result.Evidence) != 0 {
+			if result.Mode == ModeStructural || len(result.Evidence) != 0 {
 				t.Fatalf("result = %#v", result)
 			}
 		})
@@ -72,6 +76,10 @@ func TestAnalyzeFocusedStructuralEvidence(t *testing.T) {
 	assertEvidence(t, goResult, func(e Evidence) bool { return e.Role == "import" })
 	assertEvidence(t, goResult, func(e Evidence) bool { return e.Role == "call" && e.EnclosingDeclaration == "changed" })
 
+	jsResult := Analyze(Input{Language: "JavaScript", Content: []byte("export const save = () => api.call()\n"), Hunks: []Hunk{{StartLine: 1, EndLine: 1}}})
+	assertEvidence(t, jsResult, func(e Evidence) bool { return e.Role == "export" })
+	assertEvidence(t, jsResult, func(e Evidence) bool { return e.Role == "call" && e.EnclosingDeclaration == "save" })
+
 	htmlResult := Analyze(Input{Language: "HTML", Content: []byte("<main data-kind=\"x\"></main>\n"), Hunks: []Hunk{{StartLine: 1, EndLine: 1}}})
 	assertEvidence(t, htmlResult, func(e Evidence) bool { return e.Kind == "tag_name" && e.Name == "main" })
 	assertEvidence(t, htmlResult, func(e Evidence) bool { return e.Kind == "attribute" })
@@ -99,11 +107,11 @@ func TestAnalyzeHunkBoundariesAndFallbackSemantics(t *testing.T) {
 			t.Fatalf("adjacent node leaked into hunk: %#v", evidence)
 		}
 	}
-	if got := Analyze(Input{Language: "Go", Content: input.Content, Hunks: []Hunk{{StartLine: 0, EndLine: 0}}}); !got.Supported || !got.Fallback {
+	if got := Analyze(Input{Language: "Go", Content: input.Content, Hunks: []Hunk{{StartLine: 0, EndLine: 0}}}); got.Mode != ModeRawDiff {
 		t.Fatalf("invalid hunk result = %#v", got)
 	}
 	empty := Analyze(Input{Language: "Go", Content: input.Content, Hunks: []Hunk{{StartLine: 2, EndLine: 0}}})
-	if !empty.Supported || empty.Fallback || len(empty.Evidence) != 0 {
+	if empty.Mode != ModeRawDiff || len(empty.Evidence) != 0 {
 		t.Fatalf("empty hunk result = %#v", empty)
 	}
 	duplicates := Analyze(Input{Language: "Go", Content: input.Content, Hunks: []Hunk{{StartLine: 2, EndLine: 2}, {StartLine: 2, EndLine: 2}}})
@@ -111,11 +119,34 @@ func TestAnalyzeHunkBoundariesAndFallbackSemantics(t *testing.T) {
 		t.Fatalf("duplicate hunk changed evidence: %#v / %#v", result, duplicates)
 	}
 	unsupported := Analyze(Input{Language: "Ruby", Content: []byte("def x; end"), Hunks: []Hunk{{StartLine: 1, EndLine: 1}}})
-	if unsupported.Supported || !unsupported.Fallback {
+	if unsupported.Mode != ModeRawDiff {
 		t.Fatalf("unsupported result = %#v", unsupported)
 	}
 	malformed := Analyze(Input{Language: "Go", Content: []byte("func ("), Hunks: []Hunk{{StartLine: 1, EndLine: 1}}})
-	if !malformed.Supported || !malformed.Fallback {
+	if malformed.Mode != ModeRawDiff {
 		t.Fatalf("malformed result = %#v", malformed)
+	}
+}
+
+func TestAnalyzeChangePreservesGitMetadataAndSeparatesFallbackModes(t *testing.T) {
+	base := gitstate.Change{ID: "F001", Status: "M", Language: "Go", ChangeHash: "hash"}
+	raw := "@@ -1 +1 @@\n-old\n+new\n"
+
+	text := AnalyzeChange(ChangeInput{Change: base, Content: []byte("func ("), RawDiff: raw, Hunks: []Hunk{{StartLine: 1, EndLine: 1}}})
+	if text.Mode != ModeRawDiff || text.Change.ID != "F001" || text.RawDiff != raw {
+		t.Fatalf("text fallback = %#v", text)
+	}
+
+	for name, change := range map[string]gitstate.Change{
+		"binary":    {ID: "F002", Language: "Go", Binary: true},
+		"opaque":    {ID: "F003", Language: "Go", Opaque: true},
+		"sensitive": {ID: "F004", Language: "Go", Sensitive: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			result := AnalyzeChange(ChangeInput{Change: change, Content: []byte("package secret"), RawDiff: raw, Hunks: []Hunk{{1, 1}}})
+			if result.Mode != ModeMetadataOnly || len(result.RawDiff) != 0 || len(result.Evidence) != 0 {
+				t.Fatalf("metadata-only result = %#v", result)
+			}
+		})
 	}
 }

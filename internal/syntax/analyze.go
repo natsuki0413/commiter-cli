@@ -6,6 +6,7 @@ import (
 	"strings"
 	"unsafe"
 
+	"github.com/natsuki0413/commiter-cli/internal/gitstate"
 	treesitter "github.com/tree-sitter/go-tree-sitter"
 	treecss "github.com/tree-sitter/tree-sitter-css/bindings/go"
 	treego "github.com/tree-sitter/tree-sitter-go/bindings/go"
@@ -44,10 +45,35 @@ type Evidence struct {
 	EndByte              uint   `json:"end_byte"`
 }
 
+type Mode string
+
+const (
+	ModeStructural   Mode = "structural"
+	ModeRawDiff      Mode = "raw_diff"
+	ModeMetadataOnly Mode = "metadata_only"
+)
+
 type Result struct {
-	Supported bool       `json:"supported"`
-	Fallback  bool       `json:"fallback"`
-	Evidence  []Evidence `json:"evidence,omitempty"`
+	Mode     Mode       `json:"mode"`
+	Evidence []Evidence `json:"evidence,omitempty"`
+}
+
+// ChangeInput joins the approved bytes and diff hunks to the immutable Git
+// metadata collected by gitstate. RawDiff must contain only the changed hunks
+// that are safe to send to the local model.
+type ChangeInput struct {
+	Change            gitstate.Change
+	Content           []byte
+	RawDiff           string
+	Hunks             []Hunk
+	SensitiveApproved bool
+}
+
+type ChangeResult struct {
+	Change   gitstate.Change `json:"change"`
+	Mode     Mode            `json:"mode"`
+	RawDiff  string          `json:"raw_diff,omitempty"`
+	Evidence []Evidence      `json:"evidence,omitempty"`
 }
 
 type languageFactory func() unsafe.Pointer
@@ -64,39 +90,40 @@ var factories = map[string]languageFactory{
 	"css":        treecss.Language,
 }
 
-// Analyze parses one approved text file. Unsupported, opaque, binary, or
-// unapproved sensitive input returns file-local fallback without an error.
+// Analyze parses one file and returns an explicit output mode. Metadata-only
+// inputs are never parsed, while unsupported or invalid text falls back to its
+// already-approved raw diff at the Change boundary.
 func Analyze(input Input) Result {
 	if input.Binary || input.Opaque || (input.Sensitive && !input.SensitiveApproved) {
-		return Result{Fallback: true}
+		return Result{Mode: ModeMetadataOnly}
 	}
 	factory, ok := factories[strings.ToLower(input.Language)]
 	if !ok {
-		return Result{Fallback: true}
+		return Result{Mode: ModeRawDiff}
 	}
 	parser := treesitter.NewParser()
 	defer parser.Close()
 	if err := parser.SetLanguage(treesitter.NewLanguage(factory())); err != nil {
-		return Result{Supported: true, Fallback: true}
+		return Result{Mode: ModeRawDiff}
 	}
 	tree := parser.Parse(input.Content, nil)
 	if tree == nil {
-		return Result{Supported: true, Fallback: true}
+		return Result{Mode: ModeRawDiff}
 	}
 	defer tree.Close()
 	root := tree.RootNode()
 	if root.HasError() {
-		return Result{Supported: true, Fallback: true}
+		return Result{Mode: ModeRawDiff}
 	}
 	lines := lineOffsets(input.Content)
-	result := Result{Supported: true}
+	result := Result{Mode: ModeStructural}
 	for _, hunk := range input.Hunks {
 		start, end, ok := hunkBytes(hunk, lines, len(input.Content))
 		if !ok {
-			return Result{Supported: true, Fallback: true}
+			return Result{Mode: ModeRawDiff}
 		}
 		if start == end {
-			continue
+			return Result{Mode: ModeRawDiff}
 		}
 		collect(root, input.Content, start, end, nil, &result.Evidence)
 	}
@@ -114,6 +141,28 @@ func Analyze(input Input) Result {
 		return a.Name < b.Name
 	})
 	result.Evidence = unique(result.Evidence)
+	if len(result.Evidence) == 0 {
+		return Result{Mode: ModeRawDiff}
+	}
+	return result
+}
+
+// AnalyzeChange preserves the Issue #3 Git metadata and makes raw-diff versus
+// metadata-only fallback impossible to confuse at the next pipeline boundary.
+func AnalyzeChange(input ChangeInput) ChangeResult {
+	analysis := Analyze(Input{
+		Language:          input.Change.Language,
+		Content:           input.Content,
+		Hunks:             input.Hunks,
+		Binary:            input.Change.Binary,
+		Opaque:            input.Change.Opaque,
+		Sensitive:         input.Change.Sensitive,
+		SensitiveApproved: input.SensitiveApproved,
+	})
+	result := ChangeResult{Change: input.Change, Mode: analysis.Mode, Evidence: analysis.Evidence}
+	if analysis.Mode == ModeRawDiff {
+		result.RawDiff = input.RawDiff
+	}
 	return result
 }
 
@@ -149,7 +198,9 @@ func collect(node *treesitter.Node, source []byte, start, end uint, declaration 
 	kind := node.Kind()
 	current := declaration
 	if isDeclaration(kind) {
-		current = node
+		if declarationName(node, source) != "" || current == nil {
+			current = node
+		}
 	}
 	if node.IsNamed() && kind != "source_file" && node.StartByte() <= end && node.EndByte() >= start {
 		e := Evidence{Kind: kind, StartByte: node.StartByte(), EndByte: node.EndByte(), StartLine: int(node.StartPosition().Row) + 1, EndLine: int(node.EndPosition().Row) + 1}
@@ -166,6 +217,9 @@ func collect(node *treesitter.Node, source []byte, start, end uint, declaration 
 }
 
 func isDeclaration(kind string) bool {
+	if kind == "variable_declarator" {
+		return true
+	}
 	for _, part := range []string{"function", "method", "class", "struct", "interface", "module", "declaration", "definition"} {
 		if strings.Contains(kind, part) {
 			return true
