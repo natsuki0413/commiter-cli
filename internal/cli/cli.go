@@ -1,21 +1,29 @@
 package cli
 
 import (
+	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/natsuki0413/commiter-cli/internal/config"
 	"github.com/natsuki0413/commiter-cli/internal/exitcode"
+	"github.com/natsuki0413/commiter-cli/internal/ollama"
 	"github.com/natsuki0413/commiter-cli/internal/output"
 	"github.com/natsuki0413/commiter-cli/internal/repository"
 	"github.com/natsuki0413/commiter-cli/internal/trust"
 )
 
 var Version = "dev"
+
+var lookPath = exec.LookPath
+var commandFactory = exec.Command
 
 type options struct {
 	json            bool
@@ -74,14 +82,212 @@ func runSetup(args []string, printer *output.Printer) int {
 	if len(args) > 1 || (len(args) == 1 && args[0] != "--update-model") {
 		return fail(printer, exitcode.New(exitcode.Usage, "setup accepts only --update-model"))
 	}
-	return fail(printer, exitcode.New(exitcode.Internal, "setup is not implemented yet"))
+	update := len(args) == 1
+	root, err := repository.Root()
+	if err != nil {
+		return fail(printer, exitcode.New(exitcode.Usage, err.Error()))
+	}
+	paths, err := config.DefaultPaths(root)
+	if err != nil {
+		return fail(printer, exitcode.New(exitcode.Usage, err.Error()))
+	}
+	effective, err := config.Resolve(paths.GlobalConfig, paths.RepoConfig, root, config.CLIOverrides{})
+	if err != nil {
+		return fail(printer, exitcode.New(exitcode.Usage, err.Error()))
+	}
+	if _, err := lookPath("ollama"); err != nil {
+		if _, brewErr := lookPath("brew"); brewErr != nil {
+			return fail(printer, exitcode.New(exitcode.LLM, "Ollama is not installed and Homebrew is unavailable"))
+		}
+		if !confirm("Ollama is not installed. Install it with Homebrew? [y/N] ") {
+			return fail(printer, exitcode.New(exitcode.Canceled, "setup canceled"))
+		}
+		command := commandFactory("brew", "install", "ollama")
+		if err := command.Run(); err != nil {
+			return fail(printer, exitcode.New(exitcode.LLM, "Ollama installation failed"))
+		}
+	}
+	client, err := ollama.New(effective.Values)
+	if err != nil {
+		return fail(printer, err)
+	}
+	probeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	probeErr := client.Compatibility(probeCtx)
+	cancel()
+	if probeErr != nil && !confirm("Ollama daemon is stopped. Start it temporarily? [y/N] ") {
+		return fail(printer, exitcode.New(exitcode.Canceled, "setup canceled"))
+	}
+	runtime, err := ollama.OpenForSetup(context.Background(), effective.Values)
+	if err != nil {
+		return fail(printer, err)
+	}
+	defer runtime.Close()
+	present, err := runtime.Client.HasModel(context.Background())
+	if err != nil {
+		return fail(printer, err)
+	}
+	if present && !update {
+		return finishSetup(printer, "Ollama is ready; model is already installed")
+	}
+	if !present {
+		update = true
+	}
+	if update {
+		if !confirm(fmt.Sprintf("Pull/update model %s? [y/N] ", effective.Values.Model)) {
+			return finishSetup(printer, "setup canceled; model was not changed")
+		}
+		if err := runtime.Client.Pull(context.Background()); err != nil {
+			return fail(printer, err)
+		}
+		return finishSetup(printer, "Ollama setup completed")
+	}
+	return finishSetup(printer, "Ollama is ready")
 }
 
 func runDoctor(args []string, printer *output.Printer) int {
 	if len(args) != 0 {
 		return fail(printer, exitcode.New(exitcode.Usage, "doctor does not accept arguments"))
 	}
-	return fail(printer, exitcode.New(exitcode.Internal, "doctor is not implemented yet"))
+	checks := map[string]any{}
+	_, ollamaErr := lookPath("ollama")
+	checks["ollama_binary"] = check(ollamaErr == nil, message(ollamaErr, "Ollama executable available"))
+	root, rootErr := repository.Root()
+	checks["git"] = check(rootErr == nil, message(rootErr, "repository detected"))
+	if rootErr == nil {
+		paths, err := config.DefaultPaths(root)
+		if err == nil {
+			effective, resolveErr := config.Resolve(paths.GlobalConfig, paths.RepoConfig, root, config.CLIOverrides{})
+			checks["config"] = check(resolveErr == nil, message(resolveErr, "configuration valid"))
+			checks["trust"] = checkTrust(paths.StateDir, root)
+			if resolveErr == nil {
+				ollamaChecks := doctorOllama(effective.Values)
+				checks["ollama"] = ollamaChecks["ollama"]
+				checks["structured_output"] = ollamaChecks["structured_output"]
+				checks["thinking"] = ollamaChecks["thinking"]
+			}
+		} else {
+			checks["config"] = check(false, "configuration paths unavailable")
+		}
+	}
+	checks["git_identity"] = doctorGitIdentity()
+	if checks["structured_output"] == nil {
+		checks["structured_output"] = check(false, "Ollama compatibility could not be verified")
+	}
+	if checks["thinking"] == nil {
+		checks["thinking"] = check(false, "Ollama compatibility could not be verified")
+	}
+	ok := true
+	for _, value := range checks {
+		if item, yes := value.(map[string]any); yes && item["ok"] == false {
+			ok = false
+		}
+	}
+	if printer.JSON() {
+		if err := printer.Value(map[string]any{"doctor": checks, "ok": ok, "read_only": true}); err != nil {
+			return fail(printer, exitcode.New(exitcode.Internal, "cannot write output"))
+		}
+	} else {
+		lines := []string{"Doctor (read-only)"}
+		keys := make([]string, 0, len(checks))
+		for key := range checks {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			item := checks[key].(map[string]any)
+			lines = append(lines, fmt.Sprintf("%s: %s", key, item["message"]))
+		}
+		if err := printer.Lines(lines...); err != nil {
+			return fail(printer, exitcode.New(exitcode.Internal, "cannot write output"))
+		}
+	}
+	if !ok {
+		return exitcode.LLM
+	}
+	return exitcode.Success
+}
+
+var confirmFunc = confirmFromStdin
+
+func confirm(prompt string) bool { return confirmFunc(prompt) }
+
+func confirmFromStdin(prompt string) bool {
+	fmt.Fprint(os.Stderr, prompt)
+	answer := strings.ToLower(strings.TrimSpace(readLine()))
+	return answer == "y" || answer == "yes"
+}
+func readLine() string                         { return readLineFrom(bufio.NewReader(os.Stdin)) }
+func readLineFrom(reader *bufio.Reader) string { line, _ := reader.ReadString('\n'); return line }
+func finishSetup(printer *output.Printer, message string) int {
+	if err := printer.Lines(message); err != nil {
+		return fail(printer, exitcode.New(exitcode.Internal, "cannot write output"))
+	}
+	return exitcode.Success
+}
+func check(ok bool, message string) map[string]any {
+	return map[string]any{"ok": ok, "message": message}
+}
+func message(err error, success string) string {
+	if err == nil {
+		return success
+	}
+	return err.Error()
+}
+func doctorOllama(values config.Values) map[string]map[string]any {
+	client, err := ollama.New(values)
+	if err != nil {
+		return doctorOllamaFailure(err.Error())
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := client.Compatibility(ctx); err != nil {
+		return doctorOllamaFailure(err.Error())
+	}
+	present, err := client.HasModel(ctx)
+	if err != nil {
+		return doctorOllamaFailure(err.Error())
+	}
+	if !present {
+		return map[string]map[string]any{
+			"ollama":            check(false, "configured Ollama model is not installed"),
+			"structured_output": check(true, "Ollama compatibility verified; JSON Schema output enabled"),
+			"thinking":          check(true, "Ollama compatibility verified; thinking disabled"),
+		}
+	}
+	return map[string]map[string]any{
+		"ollama":            check(true, "loopback API and configured model are ready"),
+		"structured_output": check(true, "Ollama compatibility verified; JSON Schema output enabled"),
+		"thinking":          check(true, "Ollama compatibility verified; thinking disabled"),
+	}
+}
+
+func doctorOllamaFailure(message string) map[string]map[string]any {
+	return map[string]map[string]any{
+		"ollama":            check(false, message),
+		"structured_output": check(false, "Ollama compatibility could not be verified"),
+		"thinking":          check(false, "Ollama compatibility could not be verified"),
+	}
+}
+func doctorGitIdentity() map[string]any {
+	name := exec.Command("git", "config", "--get", "user.name")
+	email := exec.Command("git", "config", "--get", "user.email")
+	nerr, eerr := name.Run(), email.Run()
+	if nerr != nil || eerr != nil {
+		return check(false, "Git user.name and user.email must be configured")
+	}
+	return check(true, "Git identity configured")
+}
+func checkTrust(stateDir, root string) map[string]any {
+	entries, err := trust.New(stateDir).List()
+	if err != nil {
+		return check(false, err.Error())
+	}
+	for _, entry := range entries {
+		if entry.RepoPath == root {
+			return check(true, "trust record present")
+		}
+	}
+	return check(true, "no trust record (approval will be requested when needed)")
 }
 
 func parse(args []string) (options, error) {

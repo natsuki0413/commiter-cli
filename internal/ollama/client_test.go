@@ -161,6 +161,30 @@ func TestCompatibilityAndModelFailuresAreLLMErrorsWithoutPull(t *testing.T) {
 	}
 }
 
+func TestPullUsesConfiguredModelAndNonStreamingRequest(t *testing.T) {
+	var received map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/api/pull" || request.Method != http.MethodPost {
+			t.Fatalf("request = %s %s", request.Method, request.URL.Path)
+		}
+		if err := json.NewDecoder(request.Body).Decode(&received); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.WriteString(w, `{"status":"success"}`)
+	}))
+	defer server.Close()
+	client, err := New(config.Values{Endpoint: server.URL, Model: "model:tag"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Pull(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if received["name"] != "model:tag" || received["stream"] != false {
+		t.Fatalf("pull request = %#v", received)
+	}
+}
+
 func TestCompatibilityRejectsMalformedAPI(t *testing.T) {
 	client := testClient(roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return jsonResponse(http.StatusOK, `{"unexpected":true}`), nil

@@ -3,12 +3,17 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/natsuki0413/commiter-cli/internal/exitcode"
 	"github.com/natsuki0413/commiter-cli/internal/trust"
 )
 
@@ -49,51 +54,109 @@ func TestJSONRestrictionIsUsageErrorAndDoesNotMixStderr(t *testing.T) {
 	}
 }
 
-func TestJSONDoctorPreservesImplementationAndUsageExitCodes(t *testing.T) {
-	tests := []struct {
-		name     string
-		args     []string
-		wantCode int
-	}{
-		{"valid but unimplemented", []string{"--json", "doctor"}, 1},
-		{"invalid argument", []string{"--json", "doctor", "nonsense"}, 2},
+func TestJSONDoctorIsStableAndReadOnly(t *testing.T) {
+	configHome, stateHome := t.TempDir(), t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("XDG_STATE_HOME", stateHome)
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"--json", "doctor"}, &stdout, &stderr)
+	if code == 2 || stderr.Len() != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 	}
+	var result struct {
+		Doctor   map[string]map[string]any `json:"doctor"`
+		ReadOnly bool                      `json:"read_only"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("JSON = %q, error = %v", stdout.String(), err)
+	}
+	if !result.ReadOnly || result.Doctor["git"] == nil || result.Doctor["config"] == nil || result.Doctor["ollama"] == nil {
+		t.Fatalf("doctor JSON = %#v", result)
+	}
+	entries, err := os.ReadDir(configHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("doctor created configuration entries: %v", entries)
+	}
+	stateEntries, err := os.ReadDir(stateHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stateEntries) != 0 {
+		t.Fatalf("doctor created trust/state entries: %v", stateEntries)
+	}
+}
+
+func TestSetupConfirmationRejectionDoesNotInvokeOperation(t *testing.T) {
+	tests := []struct {
+		name            string
+		ollamaErr, brew bool
+	}{{"install", true, true}, {"daemon", false, true}}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			var stdout, stderr bytes.Buffer
-			code := Run(test.args, &stdout, &stderr)
-			if code != test.wantCode || stderr.Len() != 0 {
-				t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+			oldLookPath, oldCommand, oldConfirm := lookPath, commandFactory, confirmFunc
+			t.Cleanup(func() { lookPath, commandFactory, confirmFunc = oldLookPath, oldCommand, oldConfirm })
+			commandCalled := false
+			lookPath = func(name string) (string, error) {
+				if name == "ollama" && test.ollamaErr {
+					return "", os.ErrNotExist
+				}
+				if name == "brew" && test.brew {
+					return "/brew", nil
+				}
+				return "/" + name, nil
 			}
-			var result struct {
-				ExitCode int `json:"exit_code"`
-			}
-			if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || result.ExitCode != test.wantCode {
-				t.Fatalf("JSON = %q, error = %v", stdout.String(), err)
+			commandFactory = func(string, ...string) *exec.Cmd { commandCalled = true; return exec.Command("false") }
+			confirmFunc = func(string) bool { return false }
+			if code := Run([]string{"setup"}, io.Discard, io.Discard); code != exitcode.Canceled || commandCalled {
+				t.Fatalf("code=%d commandCalled=%v", code, commandCalled)
 			}
 		})
 	}
 }
 
-func TestKnownButUnimplementedCommandsDoNotSucceed(t *testing.T) {
-	tests := []struct {
-		name string
-		args []string
-	}{
-		{"setup", []string{"setup"}},
-		{"setup update model", []string{"setup", "--update-model"}},
-		{"doctor", []string{"doctor"}},
+func TestSetupUpdateModelPullsOnlyAfterApproval(t *testing.T) {
+	pulled := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/version":
+			_, _ = io.WriteString(w, `{"version":"0.31.2"}`)
+		case "/api/tags":
+			_, _ = io.WriteString(w, `{"models":[{"name":"qwen3.5:4b-q4_K_M"}]}`)
+		case "/api/pull":
+			pulled = true
+			_, _ = io.WriteString(w, `{"status":"success"}`)
+		default:
+			http.NotFound(w, request)
+		}
+	}))
+	defer server.Close()
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	if err := os.MkdirAll(filepath.Join(configHome, "commiter"), 0o700); err != nil {
+		t.Fatal(err)
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			var stdout, stderr bytes.Buffer
-			if code := Run(test.args, &stdout, &stderr); code != 1 {
-				t.Fatalf("%v code = %d, stderr = %q", test.args, code, stderr.String())
-			}
-			if !strings.Contains(stderr.String(), "not implemented") {
-				t.Fatalf("stderr = %q", stderr.String())
-			}
-		})
+	configText := "[llm]\nmodel = \"qwen3.5:4b-q4_K_M\"\nendpoint = \"" + server.URL + "\"\n"
+	if err := os.WriteFile(filepath.Join(configHome, "commiter", "config.toml"), []byte(configText), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldLookPath, oldConfirm := lookPath, confirmFunc
+	t.Cleanup(func() { lookPath, confirmFunc = oldLookPath, oldConfirm })
+	lookPath = func(name string) (string, error) { return "/" + name, nil }
+	promptDisplayed := false
+	confirmFunc = func(prompt string) bool {
+		promptDisplayed = strings.Contains(prompt, "Pull/update model")
+		return promptDisplayed
+	}
+	var stdout, stderr bytes.Buffer
+	if code := Run([]string{"setup", "--update-model"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !promptDisplayed || !pulled {
+		t.Fatalf("promptDisplayed=%v pulled=%v", promptDisplayed, pulled)
 	}
 }
 

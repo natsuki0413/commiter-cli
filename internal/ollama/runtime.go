@@ -48,17 +48,37 @@ func Open(ctx context.Context, values config.Values) (*Runtime, error) {
 	return open(ctx, client, startDaemon)
 }
 
+// OpenForSetup connects to Ollama and starts a temporary daemon when needed,
+// but intentionally does not require the configured model to be installed.
+func OpenForSetup(ctx context.Context, values config.Values) (*Runtime, error) {
+	client, err := New(values)
+	if err != nil {
+		return nil, err
+	}
+	return openWithoutModel(ctx, client, startDaemon)
+}
+
+func openWithoutModel(ctx context.Context, client *Client, starter processStarter) (*Runtime, error) {
+	return openWithProbe(ctx, client, starter, existingProbeTimeout, false)
+}
+
 func open(ctx context.Context, client *Client, starter processStarter) (*Runtime, error) {
 	return openWithProbeTimeout(ctx, client, starter, existingProbeTimeout)
 }
 
 func openWithProbeTimeout(ctx context.Context, client *Client, starter processStarter, timeout time.Duration) (*Runtime, error) {
+	return openWithProbe(ctx, client, starter, timeout, true)
+}
+
+func openWithProbe(ctx context.Context, client *Client, starter processStarter, timeout time.Duration, requireInstalledModel bool) (*Runtime, error) {
 	probeContext, cancelProbe := context.WithTimeout(ctx, timeout)
 	compatibilityErr := client.Compatibility(probeContext)
 	if compatibilityErr == nil {
-		if err := requireModel(probeContext, client); err != nil {
-			cancelProbe()
-			return nil, err
+		if requireInstalledModel {
+			if err := requireModel(probeContext, client); err != nil {
+				cancelProbe()
+				return nil, err
+			}
 		}
 		cancelProbe()
 		return &Runtime{Client: client, closed: make(chan struct{})}, nil
@@ -85,9 +105,11 @@ func openWithProbeTimeout(ctx context.Context, client *Client, starter processSt
 	defer cancel()
 	for {
 		if err := client.Compatibility(startupContext); err == nil {
-			if err := requireModel(startupContext, client); err != nil {
-				_ = runtime.Close()
-				return nil, err
+			if requireInstalledModel {
+				if err := requireModel(startupContext, client); err != nil {
+					_ = runtime.Close()
+					return nil, err
+				}
 			}
 			return runtime, nil
 		} else if !isTransportError(err) {

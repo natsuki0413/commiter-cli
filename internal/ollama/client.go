@@ -46,6 +46,19 @@ type Client struct {
 	http     *http.Client
 }
 
+// Pull downloads or updates the configured model. Callers must obtain
+// explicit user approval before invoking this mutating API.
+func (c *Client) Pull(ctx context.Context) error {
+	payload := struct {
+		Name   string `json:"name"`
+		Stream bool   `json:"stream"`
+	}{Name: c.model, Stream: false}
+	var response struct {
+		Status string `json:"status"`
+	}
+	return c.post(ctx, "/api/pull", payload, &response)
+}
+
 func New(values config.Values) (*Client, error) {
 	endpoint, err := validateEndpoint(values.Endpoint)
 	if err != nil {
