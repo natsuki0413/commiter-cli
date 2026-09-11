@@ -226,6 +226,44 @@ func TestExecuteWritesEscapedSuccessfulHookOutput(t *testing.T) {
 	}
 }
 
+func TestExecuteValidatesCommitCreatedByFailingHook(t *testing.T) {
+	repo := newRepo(t, "a.txt", "outside.txt")
+	writeFile(t, repo, "a.txt", "a1\n")
+	writeFile(t, repo, "outside.txt", "outside1\n")
+	change := changesByPath(collect(t, repo))["a.txt"]
+	writeHook(t, repo, "pre-commit", "#!/bin/sh\ngit add outside.txt\ngit commit --no-verify -m hook-created >/dev/null\nexit 1\n")
+
+	result, err := Execute(Options{Root: repo, Changes: []gitstate.Change{change}, Plan: planning.Plan{SchemaVersion: planning.SchemaVersion, Commits: []planning.Commit{{Type: "fix", Scope: "a", Summary: "update a", FileIDs: []string{change.ID}}}}})
+	var failure *Error
+	if !errors.As(err, &failure) || failure.Message != "commit file set does not match its assignment" || !reflect.DeepEqual(failure.Paths, []string{"outside.txt"}) || len(result.Hashes) != 1 || failure.CommitHash != result.Hashes[0] || !failure.Restored {
+		t.Fatalf("result=%#v err=%#v", result, err)
+	}
+	if got := gitExec(t, repo, "log", "-1", "--format=%s"); got != "hook-created\n" {
+		t.Fatalf("created commit was rolled back: %q", got)
+	}
+}
+
+func TestExecuteReportsHashWhenHookOutputWriterFails(t *testing.T) {
+	repo := newRepo(t, "a.txt")
+	writeFile(t, repo, "a.txt", "a1\n")
+	change := collect(t, repo).Changes[0]
+
+	result, err := Execute(Options{Root: repo, Changes: []gitstate.Change{change}, Plan: planning.Plan{SchemaVersion: planning.SchemaVersion, Commits: []planning.Commit{{Type: "fix", Scope: "a", Summary: "update a", FileIDs: []string{change.ID}}}}, Writer: failingWriter{}})
+	var failure *Error
+	if !errors.As(err, &failure) || failure.Message != "commit was created but hook output could not be written" || len(result.Hashes) != 1 || failure.CommitHash != result.Hashes[0] || !failure.Restored {
+		t.Fatalf("result=%#v err=%#v", result, err)
+	}
+	if got := gitExec(t, repo, "diff-tree", "--no-commit-id", "--name-only", "-r", result.Hashes[0]); got != "a.txt\n" {
+		t.Fatalf("created commit file set = %q", got)
+	}
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) {
+	return 0, errors.New("fixture writer failure")
+}
+
 func TestSymmetricDifferenceReportsExtraAndMissingPaths(t *testing.T) {
 	got := symmetricDifference(map[string]bool{"extra": true}, map[string]bool{"missing": true})
 	if !reflect.DeepEqual(got, []string{"extra", "missing"}) {

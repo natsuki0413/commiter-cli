@@ -151,6 +151,10 @@ func Execute(options Options) (result Result, returnErr error) {
 				commitCreated = true
 				result.Hashes = append(result.Hashes, current)
 				committedPaths = append(committedPaths, paths...)
+				if failure := validateCreatedCommit(root, parent, current, paths); failure != nil {
+					failure.HookOutput = output.Escape(hookOutput.String())
+					return result, failure
+				}
 			}
 			if ctx.Err() != nil {
 				return result, &Error{Code: ExitInterrupted, Message: "commit execution interrupted", CommitHash: created, HookOutput: output.Escape(hookOutput.String())}
@@ -159,32 +163,47 @@ func Execute(options Options) (result Result, returnErr error) {
 		}
 		commitCreated = true
 		committedPaths = append(committedPaths, paths...)
-		if hookOutput.Len() > 0 && options.Writer != nil {
-			if _, err := io.WriteString(options.Writer, output.Escape(hookOutput.String())); err != nil {
-				return result, &Error{Code: ExitSafety, Message: "commit was created but hook output could not be written"}
-			}
-		}
 		hash, err := readHEAD(root)
 		if err != nil {
 			return result, &Error{Code: ExitSafety, Message: "commit was created but its hash could not be determined"}
 		}
 		result.Hashes = append(result.Hashes, hash)
-		actual, err := commitPaths(root, hash)
-		if err != nil {
-			return result, err
-		}
-		expected := pathSet(paths)
-		if !sameSet(actual, expected) {
-			return result, &Error{Code: ExitSafety, Message: "commit file set does not match its assignment", CommitHash: hash, Paths: symmetricDifference(actual, expected)}
+		if failure := validateCreatedCommit(root, parent, hash, paths); failure != nil {
+			failure.HookOutput = output.Escape(hookOutput.String())
+			return result, failure
 		}
 		if err := restoreOutOfScopeIndex(root, original, unique(committedPaths)); err != nil {
 			return result, err
+		}
+		if hookOutput.Len() > 0 && options.Writer != nil {
+			if _, err := io.WriteString(options.Writer, output.Escape(hookOutput.String())); err != nil {
+				return result, &Error{Code: ExitSafety, Message: "commit was created but hook output could not be written", CommitHash: hash}
+			}
 		}
 	}
 	if len(assigned) != len(allIDs) {
 		return result, &Error{Code: ExitSafety, Message: "commit plan does not assign every change"}
 	}
 	return result, nil
+}
+
+func validateCreatedCommit(root, parent, hash string, paths []string) *Error {
+	actualParent, err := gitText(root, "rev-parse", hash+"^")
+	if err != nil {
+		return &Error{Code: ExitSafety, Message: "cannot inspect created commit parent", CommitHash: hash}
+	}
+	if actualParent != parent {
+		return &Error{Code: ExitSafety, Message: "created commit parent does not match expected HEAD", CommitHash: hash}
+	}
+	actual, err := commitPaths(root, hash)
+	if err != nil {
+		return &Error{Code: ExitSafety, Message: "cannot inspect created commit file set", CommitHash: hash}
+	}
+	expected := pathSet(paths)
+	if !sameSet(actual, expected) {
+		return &Error{Code: ExitSafety, Message: "commit file set does not match its assignment", CommitHash: hash, Paths: symmetricDifference(actual, expected)}
+	}
+	return nil
 }
 
 func interruption(ctx context.Context) error {
