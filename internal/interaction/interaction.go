@@ -132,11 +132,10 @@ func buffered(input io.Reader) *bufio.Reader {
 
 func readLine(reader *bufio.Reader) (string, error) {
 	line, err := reader.ReadString('\n')
-	line = strings.TrimSpace(line)
-	if err != nil && !(errors.Is(err, io.EOF) && line != "") {
+	if err != nil {
 		return "", err
 	}
-	return line, nil
+	return strings.TrimSpace(line), nil
 }
 
 // PushTarget is a read-only resolution result. Resolved is false when the

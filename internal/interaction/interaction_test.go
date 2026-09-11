@@ -21,6 +21,8 @@ func TestReviewApproveRegenerateAndReject(t *testing.T) {
 		{"regenerate", "r\nmake one commit\n", Regenerate, "make one commit"},
 		{"reject", "n\n", Reject, ""},
 		{"eof", "", Reject, ""},
+		{"eof after approve text", "y", Reject, ""},
+		{"eof after regenerate text", "r\nfeedback", Reject, ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var out, stderr bytes.Buffer

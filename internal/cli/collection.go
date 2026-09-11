@@ -38,7 +38,11 @@ func runCollection(opts options, root string, values config.Values, printer *out
 			if err := printer.Lines(lines...); err != nil {
 				return false, err
 			}
-			answer := strings.TrimSpace(readLineFrom(reader))
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				return false, nil
+			}
+			answer := strings.TrimSpace(line)
 			return answer == "y" || answer == "Y" || strings.EqualFold(answer, "yes"), nil
 		},
 	})

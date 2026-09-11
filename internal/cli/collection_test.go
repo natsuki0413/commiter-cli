@@ -122,6 +122,28 @@ func TestMainPromptsCandidatesOnceAndAcceptsAll(t *testing.T) {
 	}
 }
 
+func TestMainDoesNotApproveSensitiveCandidatesAtEOF(t *testing.T) {
+	repo := cliRepository(t)
+	cliWrite(t, repo, "README.md", "base\n", 0o644)
+	cliGit(t, repo, "add", "README.md")
+	cliGit(t, repo, "commit", "-m", "base")
+	cliWrite(t, repo, "auth.json", "local-only\n", 0o600)
+	chdir(t, repo)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	oldInput := mainInput
+	mainInput = strings.NewReader("y")
+	t.Cleanup(func() { mainInput = oldInput })
+
+	var stdout, stderr bytes.Buffer
+	if code := Run(nil, &stdout, &stderr); code != 0 || stderr.Len() != 0 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "No target changes.") || strings.Contains(stdout.String(), "F001") || strings.Contains(stdout.String(), "local-only") {
+		t.Fatalf("sensitive candidate was approved at EOF: %q", stdout.String())
+	}
+}
+
 func TestMainRegeneratesWithSupplementAndThenApproves(t *testing.T) {
 	repo := cliRepository(t)
 	cliWrite(t, repo, "main.go", "package main\n", 0o644)
