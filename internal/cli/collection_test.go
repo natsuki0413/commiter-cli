@@ -28,17 +28,20 @@ func TestDryRunCollectsSnapshotThroughExistingCLIBoundaries(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	stubPlanFlow(t, nil)
+	oldInput := mainInput
+	mainInput = strings.NewReader("y\n")
+	t.Cleanup(func() { mainInput = oldInput })
 	beforeHead := cliGitOutput(t, repo, "rev-parse", "HEAD")
 	beforeIndex := cliGitOutput(t, repo, "diff", "--cached", "--binary")
 	beforeConfig := cliGitOutput(t, repo, "config", "--local", "--null", "--list")
 
 	var stdout, stderr bytes.Buffer
 	code := Run([]string{"--json", "--dry-run"}, &stdout, &stderr)
-	if code != 0 || stderr.Len() != 0 {
+	if code != 0 || !strings.Contains(stderr.String(), "Read all listed candidates?") {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
-	if strings.Contains(stdout.String(), "this-value") {
-		t.Fatalf("sensitive value was printed: %q", stdout.String())
+	if strings.Contains(stdout.String()+stderr.String(), "this-value") {
+		t.Fatalf("sensitive value was printed: stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
 	var result struct {
 		Plan         planning.Plan `json:"plan"`
@@ -58,7 +61,7 @@ func TestDryRunCollectsSnapshotThroughExistingCLIBoundaries(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
 		t.Fatalf("JSON=%q error=%v", stdout.String(), err)
 	}
-	if len(result.Snapshot.Changes) != 2 || len(result.Snapshot.Excluded) != 2 || len(result.Plan.Commits) != 1 || !result.DryRun || result.Verification.Executed {
+	if len(result.Snapshot.Changes) != 3 || len(result.Snapshot.Excluded) != 1 || len(result.Plan.Commits) != 1 || !result.DryRun || result.Verification.Executed {
 		t.Fatalf("snapshot=%#v", result.Snapshot)
 	}
 	if cliGitOutput(t, repo, "rev-parse", "HEAD") != beforeHead || cliGitOutput(t, repo, "diff", "--cached", "--binary") != beforeIndex || cliGitOutput(t, repo, "config", "--local", "--null", "--list") != beforeConfig {

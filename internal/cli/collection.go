@@ -27,15 +27,12 @@ func runCollection(opts options, root string, values config.Values, printer *out
 		Exclude:                  values.Exclude,
 		AdditionalSensitiveGlobs: values.SensitivePatterns,
 		ApproveSensitiveCandidates: func(candidates []gitstate.Candidate) (bool, error) {
-			if printer.JSON() {
-				return false, nil
-			}
 			lines := []string{"Sensitive candidates require approval before reading:"}
 			for _, candidate := range candidates {
 				lines = append(lines, fmt.Sprintf("%s (%s)", candidate.Path, candidate.Reason))
 			}
 			lines = append(lines, "Read all listed candidates? [y/N]")
-			if err := printer.Lines(lines...); err != nil {
+			if err := printer.PromptLines(lines...); err != nil {
 				return false, err
 			}
 			line, err := reader.ReadString('\n')

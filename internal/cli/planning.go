@@ -85,11 +85,13 @@ func analyzeForPlanning(root string, snapshot gitstate.Snapshot) ([]syntax.Chang
 			return nil, planning.SensitiveValues{}, err
 		}
 		results = append(results, result)
-		if len(content) > 0 {
-			sensitiveInputs = append(sensitiveInputs, content)
-		}
-		if rawDiff != "" {
-			sensitiveInputs = append(sensitiveInputs, []byte(rawDiff))
+		if change.Sensitive {
+			if len(content) > 0 {
+				sensitiveInputs = append(sensitiveInputs, content)
+			}
+			if rawDiff != "" {
+				sensitiveInputs = append(sensitiveInputs, []byte(rawDiff))
+			}
 		}
 	}
 	return results, planning.ExtractSensitiveValues(sensitiveInputs...), nil
