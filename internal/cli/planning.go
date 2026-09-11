@@ -138,7 +138,7 @@ func worktreeDiff(root string, paths []string) (string, error) {
 	args := []string{"-C", root, "diff", "--no-ext-diff", "--no-textconv", "--unified=0", "HEAD", "--"}
 	args = append(args, paths...)
 	command := exec.Command("git", args...)
-	command.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0", "LC_ALL=C")
+	command.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0", "GIT_LITERAL_PATHSPECS=1", "LC_ALL=C")
 	value, err := command.Output()
 	return string(value), err
 }

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/natsuki0413/commiter-cli/internal/gitstate"
@@ -32,5 +33,23 @@ func TestAnalyzeForPlanningExtractsValuesOnlyFromApprovedSensitiveCandidates(t *
 	}
 	if !sensitive.Contains([]byte("approved-fixture-value")) {
 		t.Fatal("approved sensitive candidate value was not extracted")
+	}
+}
+
+func TestWorktreeDiffTreatsCollectedPathsLiterally(t *testing.T) {
+	repo := cliRepository(t)
+	cliWrite(t, repo, "*", "literal base\n", 0o644)
+	cliWrite(t, repo, "outside.txt", "outside base\n", 0o644)
+	cliGit(t, repo, "add", "*", "outside.txt")
+	cliGit(t, repo, "commit", "-m", "base")
+	cliWrite(t, repo, "*", "literal change\n", 0o644)
+	cliWrite(t, repo, "outside.txt", "outside change\n", 0o644)
+
+	diff, err := worktreeDiff(repo, []string{"*"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(diff, "literal change") || strings.Contains(diff, "outside change") {
+		t.Fatalf("worktree diff expanded collected path as pathspec: %q", diff)
 	}
 }
