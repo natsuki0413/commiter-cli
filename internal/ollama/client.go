@@ -373,6 +373,24 @@ type transportError struct{ cause error }
 func (e transportError) Error() string { return "cannot connect to the local Ollama API" }
 func (e transportError) Unwrap() error { return e.cause }
 
+// IsRetryable reports whether a normal chat request may consume the single
+// transport/timeout retry budget. Context cancellation is deliberately not
+// retryable.
+func IsRetryable(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	var transport transportError
+	if errors.As(err, &transport) {
+		return true
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var timeout interface{ Timeout() bool }
+	return errors.As(err, &timeout) && timeout.Timeout()
+}
+
 func llmError(message string) error {
 	return exitcode.New(exitcode.LLM, message)
 }
