@@ -173,7 +173,7 @@ func validBranch(root, branch string) bool {
 	if !safeName(branch) || strings.HasPrefix(branch, "-") {
 		return false
 	}
-	command := exec.Command("git", "-C", root, "check-ref-format", "--branch", branch)
+	command := exec.Command("git", "-C", root, "check-ref-format", "refs/heads/"+branch)
 	return command.Run() == nil
 }
 

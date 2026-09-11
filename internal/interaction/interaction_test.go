@@ -92,6 +92,24 @@ func TestResolvePushTargetRejectsInvalidRefAndUnknownUpstream(t *testing.T) {
 	}
 }
 
+func TestResolvePushTargetRejectsCheckoutShorthandAsUpstreamBranch(t *testing.T) {
+	repo := t.TempDir()
+	runGit(t, repo, "init", "-b", "main")
+	runGit(t, repo, "config", "user.name", "Test User")
+	runGit(t, repo, "config", "user.email", "test@example.invalid")
+	runGit(t, repo, "commit", "--allow-empty", "-m", "base")
+	runGit(t, repo, "checkout", "-b", "previous")
+	runGit(t, repo, "checkout", "main")
+	runGit(t, repo, "remote", "add", "origin", "https://example.invalid/repo.git")
+	runGit(t, repo, "remote", "add", "two", "https://example.invalid/two.git")
+	runGit(t, repo, "config", "branch.main.remote", "origin")
+	runGit(t, repo, "config", "branch.main.merge", "refs/heads/@{-1}")
+
+	if got := ResolvePushTarget(repo); got.Resolved {
+		t.Fatalf("checkout shorthand resolved as a literal upstream branch: %#v", got)
+	}
+}
+
 func TestResolvePushTargetRejectsAmbiguousAndDetached(t *testing.T) {
 	repo := t.TempDir()
 	runGit(t, repo, "init", "-b", "main")
