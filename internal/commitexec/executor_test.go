@@ -1,6 +1,7 @@
 package commitexec
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -176,6 +177,52 @@ func TestExecuteEscapesHookOutput(t *testing.T) {
 	var failure *Error
 	if !errors.As(err, &failure) || strings.ContainsAny(failure.HookOutput, "\n\r\x1b") || !strings.Contains(failure.HookOutput, `\n`) || !failure.Restored {
 		t.Fatalf("hook output/error = %#v", failure)
+	}
+}
+
+func TestExecutePreservesCommitWhenHashLookupFails(t *testing.T) {
+	repo := newRepo(t, "a.txt", "outside.txt")
+	writeFile(t, repo, "a.txt", "a1\n")
+	writeFile(t, repo, "outside.txt", "outside1\n")
+	gitExec(t, repo, "add", "outside.txt")
+	byPath := changesByPath(collect(t, repo))
+	previous := readHEAD
+	calls := 0
+	readHEAD = func(root string) (string, error) {
+		calls++
+		if calls == 2 {
+			return "", errors.New("fixture hash lookup failure")
+		}
+		return gitText(root, "rev-parse", "HEAD")
+	}
+	t.Cleanup(func() { readHEAD = previous })
+
+	result, err := Execute(Options{Root: repo, Changes: []gitstate.Change{byPath["a.txt"]}, Plan: planning.Plan{SchemaVersion: planning.SchemaVersion, Commits: []planning.Commit{{Type: "fix", Scope: "a", Summary: "update a", FileIDs: []string{byPath["a.txt"].ID}}}}})
+	var failure *Error
+	if !errors.As(err, &failure) || failure.Message != "commit was created but its hash could not be determined" || !failure.Restored || len(result.Hashes) != 0 {
+		t.Fatalf("result=%#v err=%#v", result, err)
+	}
+	if got := gitExec(t, repo, "log", "-1", "--format=%s"); got != "fix(a): update a\n" {
+		t.Fatalf("latest commit = %q", got)
+	}
+	if got := gitExec(t, repo, "diff", "--cached", "--name-only"); got != "outside.txt\n" {
+		t.Fatalf("restored index = %q", got)
+	}
+}
+
+func TestExecuteWritesEscapedSuccessfulHookOutput(t *testing.T) {
+	repo := newRepo(t, "a.txt")
+	writeFile(t, repo, "a.txt", "a1\n")
+	change := collect(t, repo).Changes[0]
+	writeHook(t, repo, "pre-commit", "#!/bin/sh\nprintf 'verified\\n\\033[31mgreen\\r' >&2\n")
+	var writer bytes.Buffer
+
+	_, err := Execute(Options{Root: repo, Changes: []gitstate.Change{change}, Plan: planning.Plan{SchemaVersion: planning.SchemaVersion, Commits: []planning.Commit{{Type: "fix", Scope: "a", Summary: "update a", FileIDs: []string{change.ID}}}}, Writer: &writer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.ContainsAny(writer.String(), "\n\r\x1b") || !strings.Contains(writer.String(), `verified\n\x1b[31mgreen\r`) {
+		t.Fatalf("unsafe successful hook output: %q", writer.String())
 	}
 }
 

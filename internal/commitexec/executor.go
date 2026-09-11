@@ -52,6 +52,9 @@ type Result struct {
 
 var restoreInitialIndex = restoreIndex
 var restoreOutsideIndex = restoreOutOfScopeIndex
+var readHEAD = func(root string) (string, error) {
+	return gitText(root, "rev-parse", "HEAD")
+}
 
 // Execute creates commits in plan order. It never invokes reset, stash, amend,
 // force, or --no-verify. The original index is restored on any pre-commit
@@ -74,12 +77,13 @@ func Execute(options Options) (result Result, returnErr error) {
 		return Result{}, err
 	}
 	committedPaths := []string{}
+	commitCreated := false
 	defer func() {
 		if returnErr == nil {
 			return
 		}
 		var restoreErr error
-		if len(result.Hashes) == 0 {
+		if !commitCreated {
 			restoreErr = restoreInitialIndex(root, original)
 		} else {
 			restoreErr = restoreOutsideIndex(root, original, committedPaths)
@@ -131,7 +135,7 @@ func Execute(options Options) (result Result, returnErr error) {
 			return result, err
 		}
 		message := commit.Subject()
-		parent, err := gitText(root, "rev-parse", "HEAD")
+		parent, err := readHEAD(root)
 		if err != nil {
 			return result, err
 		}
@@ -142,8 +146,9 @@ func Execute(options Options) (result Result, returnErr error) {
 		cmd.Env = append(os.Environ(), "LC_ALL=C")
 		if err := cmd.Run(); err != nil {
 			created := ""
-			if current, headErr := gitText(root, "rev-parse", "HEAD"); headErr == nil && current != parent {
+			if current, headErr := readHEAD(root); headErr == nil && current != parent {
 				created = current
+				commitCreated = true
 				result.Hashes = append(result.Hashes, current)
 				committedPaths = append(committedPaths, paths...)
 			}
@@ -152,16 +157,22 @@ func Execute(options Options) (result Result, returnErr error) {
 			}
 			return result, &Error{Code: ExitSafety, Message: "git commit failed", CommitHash: created, HookOutput: output.Escape(hookOutput.String())}
 		}
-		hash, err := gitText(root, "rev-parse", "HEAD")
-		if err != nil {
-			return result, err
+		commitCreated = true
+		committedPaths = append(committedPaths, paths...)
+		if hookOutput.Len() > 0 && options.Writer != nil {
+			if _, err := io.WriteString(options.Writer, output.Escape(hookOutput.String())); err != nil {
+				return result, &Error{Code: ExitSafety, Message: "commit was created but hook output could not be written"}
+			}
 		}
+		hash, err := readHEAD(root)
+		if err != nil {
+			return result, &Error{Code: ExitSafety, Message: "commit was created but its hash could not be determined"}
+		}
+		result.Hashes = append(result.Hashes, hash)
 		actual, err := commitPaths(root, hash)
 		if err != nil {
 			return result, err
 		}
-		result.Hashes = append(result.Hashes, hash)
-		committedPaths = append(committedPaths, paths...)
 		expected := pathSet(paths)
 		if !sameSet(actual, expected) {
 			return result, &Error{Code: ExitSafety, Message: "commit file set does not match its assignment", CommitHash: hash, Paths: symmetricDifference(actual, expected)}
