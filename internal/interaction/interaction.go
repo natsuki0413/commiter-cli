@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/natsuki0413/commiter-cli/internal/output"
 	"github.com/natsuki0413/commiter-cli/internal/planning"
 )
 
@@ -26,66 +27,116 @@ const (
 // is only populated for a regenerate decision and is never logged by this
 // package.
 type ReviewRequest struct {
-	Plan       planning.Plan
-	Prompt     string
-	Supplement string
+	Plan         planning.Plan
+	Files        map[string]string
+	Excluded     []Excluded
+	Verification []VerificationCommand
+	PushTarget   PushTarget
+}
+
+type Excluded struct{ Path, Reason string }
+type VerificationCommand struct {
+	Name, CWD string
+	Argv      []string
 }
 
 // Reviewer presents a plan once and obtains y/r/N.  A short supplement is
 // read only after r, then regenerate is returned to the caller. EOF is a
 // rejection (never an approval).
 type Reviewer struct {
-	In  io.Reader
-	Out io.Writer
+	In      io.Reader
+	Printer *output.Printer
 }
 
 func (r Reviewer) Review(request ReviewRequest) (Decision, string, error) {
-	if r.In == nil || r.Out == nil {
+	if r.In == nil || r.Printer == nil {
 		return Reject, "", errors.New("review input and output are required")
 	}
-	if err := renderPlan(r.Out, request.Plan); err != nil {
+	if err := Render(r.Printer, request); err != nil {
 		return Reject, "", err
 	}
-	if _, err := io.WriteString(r.Out, "Create these commits? [y/r/N] "); err != nil {
+	if err := r.Printer.Lines(fmt.Sprintf("Create these %d commits? [y/r/N]", len(request.Plan.Commits))); err != nil {
 		return Reject, "", err
 	}
-	scanner := bufio.NewScanner(r.In)
-	if !scanner.Scan() {
-		if err := scanner.Err(); err != nil {
-			return Reject, "", err
+	reader := buffered(r.In)
+	answer, err := readLine(reader)
+	if err != nil {
+		if errors.Is(err, io.EOF) {
+			return Reject, "", nil
 		}
+		return Reject, "", err
+	}
+	if answer == "" {
 		return Reject, "", nil
 	}
-	answer := strings.TrimSpace(scanner.Text())
 	switch strings.ToLower(answer) {
 	case "y", "yes":
 		return Approve, "", nil
 	case "r", "regenerate":
-		if _, err := io.WriteString(r.Out, "Why should the plan be regenerated? "); err != nil {
+		if err := r.Printer.Lines("Why should the plan be regenerated?"); err != nil {
 			return Reject, "", err
 		}
-		if !scanner.Scan() {
-			if err := scanner.Err(); err != nil {
-				return Reject, "", err
+		supplement, err := readLine(reader)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return Reject, "", nil
 			}
+			return Reject, "", err
+		}
+		if supplement == "" {
 			return Reject, "", nil
 		}
-		return Regenerate, strings.TrimSpace(scanner.Text()), nil
+		return Regenerate, supplement, nil
 	default:
 		return Reject, "", nil
 	}
 }
 
-func renderPlan(out io.Writer, plan planning.Plan) error {
-	if _, err := fmt.Fprintf(out, "Plan (%d commits):\n", len(plan.Commits)); err != nil {
-		return err
+func Render(printer *output.Printer, request ReviewRequest) error {
+	lines := []string{fmt.Sprintf("Plan (%d commits):", len(request.Plan.Commits))}
+	for index, commit := range request.Plan.Commits {
+		files := make([]string, 0, len(commit.FileIDs))
+		for _, id := range commit.FileIDs {
+			files = append(files, id+"="+request.Files[id])
+		}
+		lines = append(lines, fmt.Sprintf("%d. %s files=%s", index+1, commit.Subject(), strings.Join(files, ",")))
 	}
-	for index, commit := range plan.Commits {
-		if _, err := fmt.Fprintf(out, "%d. %s files=%s\n", index+1, commit.Subject(), strings.Join(commit.FileIDs, ",")); err != nil {
-			return err
+	if len(request.Excluded) == 0 {
+		lines = append(lines, "Excluded: none")
+	} else {
+		for _, excluded := range request.Excluded {
+			lines = append(lines, "Excluded: "+excluded.Path+" ("+excluded.Reason+")")
 		}
 	}
-	return nil
+	if len(request.Verification) == 0 {
+		lines = append(lines, "Verification: none")
+	} else {
+		for _, command := range request.Verification {
+			lines = append(lines, fmt.Sprintf("Verification: %s cwd=%s argv=%s", command.Name, command.CWD, strings.Join(command.Argv, " ")))
+		}
+	}
+	if request.PushTarget.Resolved {
+		lines = append(lines, fmt.Sprintf("Push target: %s/%s", request.PushTarget.Remote, request.PushTarget.Branch))
+	} else {
+		lines = append(lines, "Push target: unresolved ("+request.PushTarget.Reason+")")
+	}
+	return printer.Lines(lines...)
+}
+
+func buffered(input io.Reader) *bufio.Reader {
+	if reader, ok := input.(*bufio.Reader); ok {
+		return reader
+	}
+	return bufio.NewReader(input)
+}
+
+func readLine(reader *bufio.Reader) (string, error) {
+	line, err := reader.ReadString('\n')
+	line = strings.TrimSpace(line)
+	if err != nil && !(errors.Is(err, io.EOF) && line != "") {
+		return "", err
+	}
+	return line, nil
 }
 
 // PushTarget is a read-only resolution result. Resolved is false when the
@@ -103,19 +154,38 @@ type PushTarget struct {
 // It only invokes git read operations and never contacts or mutates a remote.
 func ResolvePushTarget(root string) PushTarget {
 	branch := git(root, "symbolic-ref", "--quiet", "--short", "HEAD")
-	if branch == "" || !safeName(branch) {
+	if !validBranch(root, branch) {
 		return PushTarget{Resolved: false, Reason: "push target cannot be resolved from detached or unsafe HEAD"}
 	}
+	remotes := strings.Fields(git(root, "remote"))
 	upstreamRemote := git(root, "config", "--get", "branch."+branch+".remote")
 	upstreamMerge := git(root, "config", "--get", "branch."+branch+".merge")
-	if safeName(upstreamRemote) && strings.HasPrefix(upstreamMerge, "refs/heads/") && safeName(strings.TrimPrefix(upstreamMerge, "refs/heads/")) {
+	upstreamBranch := strings.TrimPrefix(upstreamMerge, "refs/heads/")
+	if contains(remotes, upstreamRemote) && validBranch(root, upstreamBranch) && upstreamMerge == "refs/heads/"+upstreamBranch {
 		return PushTarget{Remote: upstreamRemote, Branch: strings.TrimPrefix(upstreamMerge, "refs/heads/"), Resolved: true}
 	}
-	remotes := strings.Fields(git(root, "remote"))
-	if len(remotes) == 1 && safeName(remotes[0]) {
+	if len(remotes) == 1 && safeRemote(remotes[0]) {
 		return PushTarget{Remote: remotes[0], Branch: branch, Resolved: true}
 	}
 	return PushTarget{Resolved: false, Reason: "push target is ambiguous: configure an upstream or leave exactly one remote"}
+}
+
+func validBranch(root, branch string) bool {
+	if !safeName(branch) || strings.HasPrefix(branch, "-") {
+		return false
+	}
+	command := exec.Command("git", "-C", root, "check-ref-format", "--branch", branch)
+	return command.Run() == nil
+}
+
+func safeRemote(remote string) bool { return safeName(remote) && !strings.HasPrefix(remote, "-") }
+func contains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target && safeRemote(value) {
+			return true
+		}
+	}
+	return false
 }
 
 func git(root string, args ...string) string {
