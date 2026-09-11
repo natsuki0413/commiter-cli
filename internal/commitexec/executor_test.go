@@ -64,18 +64,20 @@ func TestExecutePreservesOutOfScopeIndexAndCreatesPlanOrder(t *testing.T) {
 }
 
 func TestExecuteKeepsCommittedWorkAndRestoresOnlyOutsideIndexOnLaterHashFailure(t *testing.T) {
-	repo := newRepo(t, "a.txt", "b.txt", "outside.txt")
+	repo := newRepo(t, "a.txt", "b.txt", "c.txt", "outside.txt")
 	writeFile(t, repo, "a.txt", "a1\n")
 	writeFile(t, repo, "b.txt", "b1\n")
+	writeFile(t, repo, "c.txt", "c1\n")
 	writeFile(t, repo, "outside.txt", "outside1\n")
 	gitExec(t, repo, "add", "outside.txt")
 	snapshot := collect(t, repo)
 	byPath := changesByPath(snapshot)
-	writeHook(t, repo, "pre-commit", "#!/bin/sh\ncase \"$(git diff --cached --name-only)\" in *a.txt*) printf 'changed by hook\\n' > b.txt;; esac\n")
+	writeHook(t, repo, "pre-commit", "#!/bin/sh\ncase \"$(git diff --cached --name-only)\" in *a.txt*) printf 'changed by hook\\n' > c.txt;; esac\n")
 
-	result, err := Execute(Options{Root: repo, Changes: []gitstate.Change{byPath["a.txt"], byPath["b.txt"]}, Plan: planning.Plan{SchemaVersion: planning.SchemaVersion, Commits: []planning.Commit{
+	result, err := Execute(Options{Root: repo, Changes: []gitstate.Change{byPath["a.txt"], byPath["b.txt"], byPath["c.txt"]}, Plan: planning.Plan{SchemaVersion: planning.SchemaVersion, Commits: []planning.Commit{
 		{Type: "fix", Scope: "a", Summary: "update a", FileIDs: []string{byPath["a.txt"].ID}},
 		{Type: "fix", Scope: "b", Summary: "update b", FileIDs: []string{byPath["b.txt"].ID}},
+		{Type: "fix", Scope: "c", Summary: "update c", FileIDs: []string{byPath["c.txt"].ID}},
 	}}})
 	var failure *Error
 	if !errors.As(err, &failure) || len(result.Hashes) != 1 || !failure.Restored {

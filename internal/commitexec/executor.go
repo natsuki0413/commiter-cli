@@ -110,7 +110,7 @@ func Execute(options Options) (result Result, returnErr error) {
 		byID[change.ID] = change
 	}
 	assigned := make(map[string]bool)
-	for _, commit := range options.Plan.Commits {
+	for commitIndex, commit := range options.Plan.Commits {
 		if err := interruption(ctx); err != nil {
 			return result, err
 		}
@@ -128,7 +128,7 @@ func Execute(options Options) (result Result, returnErr error) {
 			assigned[id] = true
 			paths = append(paths, stagePaths(change)...)
 		}
-		if err := verifyHashes(root, options.Changes, commit.FileIDs); err != nil {
+		if err := verifyHashes(root, options.Changes, remainingFileIDs(options.Plan.Commits[commitIndex:])); err != nil {
 			return result, err
 		}
 		if err := stageAssignment(root, original, allPlannedPaths(options.Changes), paths); err != nil {
@@ -185,6 +185,14 @@ func Execute(options Options) (result Result, returnErr error) {
 		return result, &Error{Code: ExitSafety, Message: "commit plan does not assign every change"}
 	}
 	return result, nil
+}
+
+func remainingFileIDs(commits []planning.Commit) []string {
+	var result []string
+	for _, commit := range commits {
+		result = append(result, commit.FileIDs...)
+	}
+	return result
 }
 
 func validateCreatedCommit(root, parent, hash string, paths []string) *Error {
