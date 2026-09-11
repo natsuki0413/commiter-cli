@@ -10,6 +10,7 @@ import (
 	"github.com/natsuki0413/commiter-cli/internal/config"
 	"github.com/natsuki0413/commiter-cli/internal/exitcode"
 	"github.com/natsuki0413/commiter-cli/internal/gitstate"
+	"github.com/natsuki0413/commiter-cli/internal/interaction"
 	"github.com/natsuki0413/commiter-cli/internal/output"
 )
 
@@ -46,8 +47,9 @@ func runCollection(opts options, root string, values config.Values, printer *out
 	}
 
 	planningUnavailable := len(snapshot.Changes) > 0
+	pushTarget := interaction.ResolvePushTarget(root)
 	if printer.JSON() {
-		result := map[string]any{"snapshot": snapshot}
+		result := map[string]any{"snapshot": snapshot, "push_target": pushTarget, "dry_run": opts.dryRun, "verification": map[string]any{"executed": false}}
 		if planningUnavailable {
 			result["error"] = "commit planning is not implemented yet"
 			result["exit_code"] = exitcode.Internal
@@ -57,6 +59,15 @@ func runCollection(opts options, root string, values config.Values, printer *out
 		}
 	} else if err := printSnapshot(snapshot, printer); err != nil {
 		return fail(printer, exitcode.New(exitcode.Internal, "cannot write output"))
+	}
+	if opts.dryRun && !printer.JSON() {
+		if pushTarget.Resolved {
+			if err := printer.Lines(fmt.Sprintf("Push target: %s/%s", pushTarget.Remote, pushTarget.Branch)); err != nil {
+				return fail(printer, exitcode.New(exitcode.Internal, "cannot write output"))
+			}
+		} else if err := printer.Lines("Push target: unresolved (" + pushTarget.Reason + ")"); err != nil {
+			return fail(printer, exitcode.New(exitcode.Internal, "cannot write output"))
+		}
 	}
 	if !planningUnavailable {
 		return exitcode.Success
