@@ -21,7 +21,7 @@ func TestRunExecutesArgvSequentiallyWithoutShell(t *testing.T) {
 		{Name: "first", CWD: ".", Argv: []string{"printf", "%s", "one; printf injected"}},
 		{Name: "second", CWD: ".", Argv: []string{"printf", "%s", "two"}},
 	}}
-	result, err := Run(context.Background(), root, definition, time.Second)
+	result, err := Run(context.Background(), root, definition, time.Second, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +36,7 @@ func TestRunStopsAfterFailureAndKeepsOutput(t *testing.T) {
 		{Name: "failure", CWD: ".", Argv: []string{"sh", "-c", "printf failed; exit 9"}},
 		{Name: "unreached", CWD: ".", Argv: []string{"sh", "-c", "printf reached"}},
 	}}
-	result, err := Run(context.Background(), verificationRepository(t), definition, time.Second)
+	result, err := Run(context.Background(), verificationRepository(t), definition, time.Second, nil)
 	var failure *RunError
 	if !errors.As(err, &failure) || failure.Kind != RunFailed || failure.Command != "failure" {
 		t.Fatalf("error = %#v", err)
@@ -53,7 +53,7 @@ func TestRunAttributesGitVisibleMutationToCommand(t *testing.T) {
 	gitVerification(t, root, "commit", "-m", "base")
 	definition := &Definition{Commands: []Command{{Name: "mutator", CWD: ".", Argv: []string{"sh", "-c", "printf changed > tracked.txt"}}}}
 
-	result, err := Run(context.Background(), root, definition, time.Second)
+	result, err := Run(context.Background(), root, definition, time.Second, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestRunAttributesGitVisibleMutationToCommand(t *testing.T) {
 func TestRunClassifiesTimeoutAndInterruption(t *testing.T) {
 	definition := &Definition{Commands: []Command{{Name: "wait", CWD: ".", Argv: []string{"sh", "-c", "sleep 5"}}}}
 	root := verificationRepository(t)
-	_, err := Run(context.Background(), root, definition, 10*time.Millisecond)
+	_, err := Run(context.Background(), root, definition, 10*time.Millisecond, nil)
 	var failure *RunError
 	if !errors.As(err, &failure) || failure.Kind != RunTimedOut {
 		t.Fatalf("timeout error = %#v", err)
@@ -73,7 +73,7 @@ func TestRunClassifiesTimeoutAndInterruption(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err = Run(ctx, root, definition, time.Second)
+	_, err = Run(ctx, root, definition, time.Second, nil)
 	if !errors.As(err, &failure) || failure.Kind != RunInterrupted {
 		t.Fatalf("interruption error = %#v", err)
 	}
@@ -85,13 +85,13 @@ func TestRepositoryStateDetectsWorktreeAndRestoresIndex(t *testing.T) {
 	gitVerification(t, repo, "add", "tracked.txt")
 	gitVerification(t, repo, "commit", "-m", "base")
 	writeVerificationFile(t, repo, "tracked.txt", "before\n")
-	before, err := CaptureRepositoryState(repo)
+	before, err := CaptureRepositoryState(repo, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	writeVerificationFile(t, repo, "tracked.txt", "after mutation\n")
 	gitVerification(t, repo, "add", "tracked.txt")
-	after, err := CaptureRepositoryState(repo)
+	after, err := CaptureRepositoryState(repo, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestRepositoryStateDetectsWorktreeAndRestoresIndex(t *testing.T) {
 	if err := before.RestoreIndex(); err != nil {
 		t.Fatal(err)
 	}
-	restored, err := CaptureRepositoryState(repo)
+	restored, err := CaptureRepositoryState(repo, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,19 +116,73 @@ func TestRepositoryStateDetectsUntrackedAndIndexOnlyMutations(t *testing.T) {
 	gitVerification(t, repo, "add", "tracked.txt")
 	gitVerification(t, repo, "commit", "-m", "base")
 	writeVerificationFile(t, repo, "tracked.txt", "changed\n")
-	before, err := CaptureRepositoryState(repo)
+	before, err := CaptureRepositoryState(repo, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	gitVerification(t, repo, "add", "tracked.txt")
 	writeVerificationFile(t, repo, "untracked.txt", "new\n")
-	after, err := CaptureRepositoryState(repo)
+	after, err := CaptureRepositoryState(repo, []string{"untracked.txt"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := ChangedPaths(before, after); !reflect.DeepEqual(got, []string{"tracked.txt", "untracked.txt"}) {
 		t.Fatalf("changed paths = %#v", got)
+	}
+}
+
+func TestRepositoryStateIgnoresUnselectedUntrackedFiles(t *testing.T) {
+	repo := verificationRepository(t)
+	before, err := CaptureRepositoryState(repo, []string{"target.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeVerificationFile(t, repo, "coverage.out", "not selected\n")
+	afterOutside, err := CaptureRepositoryState(repo, []string{"target.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ChangedPaths(before, afterOutside); len(got) != 0 {
+		t.Fatalf("unselected untracked file was treated as mutation: %#v", got)
+	}
+
+	writeVerificationFile(t, repo, "target.txt", "selected\n")
+	afterTarget, err := CaptureRepositoryState(repo, []string{"target.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ChangedPaths(afterOutside, afterTarget); !reflect.DeepEqual(got, []string{"target.txt"}) {
+		t.Fatalf("selected untracked mutation = %#v", got)
+	}
+}
+
+func TestRepositoryStateHashesDirtyTrackedContentIndependentlyOfMetadata(t *testing.T) {
+	repo := verificationRepository(t)
+	writeVerificationFile(t, repo, "tracked.txt", "base\n")
+	gitVerification(t, repo, "add", "tracked.txt")
+	gitVerification(t, repo, "commit", "-m", "base")
+	writeVerificationFile(t, repo, "tracked.txt", "aaaa\n")
+	path := filepath.Join(repo, "tracked.txt")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := CaptureRepositoryState(repo, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	writeVerificationFile(t, repo, "tracked.txt", "bbbb\n")
+	if err := os.Chtimes(path, info.ModTime(), info.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	after, err := CaptureRepositoryState(repo, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ChangedPaths(before, after); !reflect.DeepEqual(got, []string{"tracked.txt"}) {
+		t.Fatalf("same-size same-mtime content mutation = %#v", got)
 	}
 }
 

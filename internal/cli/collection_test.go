@@ -223,7 +223,7 @@ func TestMainRunsVerificationBeforeCommit(t *testing.T) {
 
 	order := []string{}
 	stubPostApprovalFlows(t,
-		func(context.Context, string, *verification.Definition, time.Duration) (verification.RunResult, error) {
+		func(context.Context, string, *verification.Definition, time.Duration, []string) (verification.RunResult, error) {
 			order = append(order, "verification")
 			return verification.RunResult{}, nil
 		},
@@ -257,7 +257,7 @@ func TestMainStopsOnVerificationMutationAndRestoresInitialIndex(t *testing.T) {
 	t.Cleanup(func() { mainInput = oldInput })
 	commitCalled := false
 	stubPostApprovalFlows(t,
-		func(context.Context, string, *verification.Definition, time.Duration) (verification.RunResult, error) {
+		func(context.Context, string, *verification.Definition, time.Duration, []string) (verification.RunResult, error) {
 			cliWrite(t, repo, "a.txt", "verification mutation\n", 0o644)
 			cliGit(t, repo, "add", "a.txt")
 			return verification.RunResult{Commands: []verification.CommandResult{{Name: "fixture"}}}, nil
@@ -301,7 +301,7 @@ func TestMainReanalyzesCurrentStateAfterMutationApproval(t *testing.T) {
 	runs := 0
 	commits := 0
 	stubPostApprovalFlows(t,
-		func(context.Context, string, *verification.Definition, time.Duration) (verification.RunResult, error) {
+		func(context.Context, string, *verification.Definition, time.Duration, []string) (verification.RunResult, error) {
 			runs++
 			if runs == 1 {
 				cliWrite(t, repo, "a.txt", "reanalyzed\n", 0o644)
@@ -337,7 +337,7 @@ func TestMainMapsVerificationFailureAndEscapesOutput(t *testing.T) {
 	mainInput = strings.NewReader("y\n")
 	t.Cleanup(func() { mainInput = oldInput })
 	stubPostApprovalFlows(t,
-		func(context.Context, string, *verification.Definition, time.Duration) (verification.RunResult, error) {
+		func(context.Context, string, *verification.Definition, time.Duration, []string) (verification.RunResult, error) {
 			return verification.RunResult{Commands: []verification.CommandResult{{Name: "fixture", Output: "bad\x1b[2J\nforged"}}}, &verification.RunError{Kind: verification.RunFailed, Command: "fixture"}
 		},
 		func(commitexec.Options) (commitexec.Result, error) {
@@ -371,7 +371,7 @@ func TestMainAllowsIgnoredVerificationOutput(t *testing.T) {
 	t.Cleanup(func() { mainInput = oldInput })
 	commitCalled := false
 	stubPostApprovalFlows(t,
-		func(context.Context, string, *verification.Definition, time.Duration) (verification.RunResult, error) {
+		func(context.Context, string, *verification.Definition, time.Duration, []string) (verification.RunResult, error) {
 			cliWrite(t, repo, "generated/output.txt", "ignored\n", 0o644)
 			return verification.RunResult{}, nil
 		},
@@ -387,7 +387,116 @@ func TestMainAllowsIgnoredVerificationOutput(t *testing.T) {
 	}
 }
 
-func stubPostApprovalFlows(t *testing.T, verify func(context.Context, string, *verification.Definition, time.Duration) (verification.RunResult, error), commit func(commitexec.Options) (commitexec.Result, error)) {
+func TestMainAllowsUnselectedUntrackedVerificationOutput(t *testing.T) {
+	repo := cliRepository(t)
+	cliWrite(t, repo, "a.txt", "base\n", 0o644)
+	cliGit(t, repo, "add", "a.txt")
+	cliGit(t, repo, "commit", "-m", "base")
+	cliWrite(t, repo, "a.txt", "planned\n", 0o644)
+	chdir(t, repo)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	stubPlanFlow(t, nil)
+	oldInput := mainInput
+	mainInput = strings.NewReader("y\n")
+	t.Cleanup(func() { mainInput = oldInput })
+	commitCalled := false
+	stubPostApprovalFlows(t,
+		func(context.Context, string, *verification.Definition, time.Duration, []string) (verification.RunResult, error) {
+			cliWrite(t, repo, "coverage.out", "outside selected pathspec\n", 0o644)
+			return verification.RunResult{}, nil
+		},
+		func(commitexec.Options) (commitexec.Result, error) {
+			commitCalled = true
+			return commitexec.Result{Hashes: []string{"fixture-hash"}}, nil
+		},
+	)
+
+	var stdout, stderr bytes.Buffer
+	if code := Run([]string{"a.txt"}, &stdout, &stderr); code != 0 || !commitCalled || stderr.Len() != 0 {
+		t.Fatalf("code=%d commitCalled=%t stdout=%q stderr=%q", code, commitCalled, stdout.String(), stderr.String())
+	}
+}
+
+func TestMainStopsForNewUntrackedInsideSelection(t *testing.T) {
+	repo := cliRepository(t)
+	cliWrite(t, repo, "a.txt", "base\n", 0o644)
+	cliGit(t, repo, "add", "a.txt")
+	cliGit(t, repo, "commit", "-m", "base")
+	cliWrite(t, repo, "a.txt", "planned\n", 0o644)
+	chdir(t, repo)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	stubPlanFlow(t, nil)
+	oldInput := mainInput
+	mainInput = strings.NewReader("y\nn\n")
+	t.Cleanup(func() { mainInput = oldInput })
+	commitCalled := false
+	stubPostApprovalFlows(t,
+		func(context.Context, string, *verification.Definition, time.Duration, []string) (verification.RunResult, error) {
+			cliWrite(t, repo, "new-target.txt", "new target\n", 0o644)
+			return verification.RunResult{}, nil
+		},
+		func(commitexec.Options) (commitexec.Result, error) {
+			commitCalled = true
+			return commitexec.Result{}, nil
+		},
+	)
+
+	var stdout, stderr bytes.Buffer
+	if code := Run(nil, &stdout, &stderr); code != exitcode.Safety || commitCalled {
+		t.Fatalf("code=%d commitCalled=%t stdout=%q stderr=%q", code, commitCalled, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "new-target.txt") || !strings.Contains(stdout.String(), "Re-analyze changed state?") {
+		t.Fatalf("stdout=%q", stdout.String())
+	}
+}
+
+func TestMainDetectsUnselectedDirtyTrackedContentWithStableMetadata(t *testing.T) {
+	repo := cliRepository(t)
+	cliWrite(t, repo, "a.txt", "base\n", 0o644)
+	cliWrite(t, repo, "outside.txt", "base\n", 0o644)
+	cliGit(t, repo, "add", "a.txt", "outside.txt")
+	cliGit(t, repo, "commit", "-m", "base")
+	cliWrite(t, repo, "a.txt", "planned\n", 0o644)
+	cliWrite(t, repo, "outside.txt", "aaaa\n", 0o644)
+	outsidePath := filepath.Join(repo, "outside.txt")
+	chdir(t, repo)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	stubPlanFlow(t, nil)
+	oldInput := mainInput
+	mainInput = strings.NewReader("y\nn\n")
+	t.Cleanup(func() { mainInput = oldInput })
+	commitCalled := false
+	stubPostApprovalFlows(t,
+		func(context.Context, string, *verification.Definition, time.Duration, []string) (verification.RunResult, error) {
+			info, err := os.Stat(outsidePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cliWrite(t, repo, "outside.txt", "bbbb\n", 0o644)
+			if err := os.Chtimes(outsidePath, info.ModTime(), info.ModTime()); err != nil {
+				t.Fatal(err)
+			}
+			return verification.RunResult{}, nil
+		},
+		func(commitexec.Options) (commitexec.Result, error) {
+			commitCalled = true
+			return commitexec.Result{}, nil
+		},
+	)
+
+	var stdout, stderr bytes.Buffer
+	if code := Run([]string{"a.txt"}, &stdout, &stderr); code != exitcode.Safety || commitCalled {
+		t.Fatalf("code=%d commitCalled=%t stdout=%q stderr=%q", code, commitCalled, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "outside.txt") || !strings.Contains(stdout.String(), "Re-analyze changed state?") {
+		t.Fatalf("stdout=%q", stdout.String())
+	}
+}
+
+func stubPostApprovalFlows(t *testing.T, verify func(context.Context, string, *verification.Definition, time.Duration, []string) (verification.RunResult, error), commit func(commitexec.Options) (commitexec.Result, error)) {
 	t.Helper()
 	previousVerification, previousCommit := verificationFlow, commitFlow
 	verificationFlow, commitFlow = verify, commit

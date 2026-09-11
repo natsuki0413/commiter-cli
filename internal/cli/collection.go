@@ -68,7 +68,7 @@ func runCollectionCycle(opts options, root string, values config.Values, reader 
 		return exitcode.Success, false
 	}
 
-	initialState, err := verification.CaptureRepositoryState(root)
+	initialState, err := verification.CaptureRepositoryState(root, snapshot.Untracked)
 	if err != nil {
 		return fail(printer, exitcode.New(exitcode.Safety, err.Error())), false
 	}
@@ -135,7 +135,7 @@ approved:
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	runResult, runErr := verificationFlow(ctx, root, definition, time.Duration(values.Timeout)*time.Second)
+	runResult, runErr := verificationFlow(ctx, root, definition, time.Duration(values.Timeout)*time.Second, snapshot.Untracked)
 	if err := printVerificationResults(printer, runResult); err != nil {
 		if restoreErr := initialState.RestoreIndex(); restoreErr != nil {
 			return fail(printer, exitcode.New(exitcode.Commit, "verification output failed and index restoration is unknown")), false
@@ -156,7 +156,7 @@ approved:
 		return fail(printer, exitcode.New(exitcode.Verification, runErr.Error())), false
 	}
 
-	afterState, stateErr := verification.CaptureRepositoryState(root)
+	afterState, stateErr := verification.CaptureRepositoryState(root, snapshot.Untracked)
 	current, collectErr := revalidateSnapshot(root, values, opts.pathspecs, snapshot)
 	if ctx.Err() != nil {
 		if err := initialState.RestoreIndex(); err != nil {
