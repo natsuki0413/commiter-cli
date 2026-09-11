@@ -4,6 +4,7 @@ package commitexec
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -13,12 +14,14 @@ import (
 	"strings"
 
 	"github.com/natsuki0413/commiter-cli/internal/gitstate"
+	"github.com/natsuki0413/commiter-cli/internal/output"
 	"github.com/natsuki0413/commiter-cli/internal/planning"
 )
 
 // ExitCode is the structured classification for commit execution failures.
 const (
-	ExitSafety = 7
+	ExitSafety      = 7
+	ExitInterrupted = 130
 )
 
 type Error struct {
@@ -27,6 +30,7 @@ type Error struct {
 	CommitHash string
 	Paths      []string
 	HookOutput string
+	Restored   bool
 }
 
 func (e *Error) Error() string { return e.Message }
@@ -35,6 +39,7 @@ func (e *Error) Error() string { return e.Message }
 // was used to validate the plan; IDs are resolved again immediately before each
 // stage operation.
 type Options struct {
+	Context context.Context
 	Root    string
 	Changes []gitstate.Change
 	Plan    planning.Plan
@@ -45,13 +50,20 @@ type Result struct {
 	Hashes []string
 }
 
+var restoreInitialIndex = restoreIndex
+var restoreOutsideIndex = restoreOutOfScopeIndex
+
 // Execute creates commits in plan order. It never invokes reset, stash, amend,
 // force, or --no-verify. The original index is restored on any pre-commit
 // failure or interruption. A post-commit invariant failure deliberately keeps
 // created commits and returns the created hash in Error.CommitHash.
-func Execute(options Options) (Result, error) {
+func Execute(options Options) (result Result, returnErr error) {
 	if options.Root == "" || len(options.Changes) == 0 || len(options.Plan.Commits) == 0 {
 		return Result{}, &Error{Code: ExitSafety, Message: "commit execution requires a non-empty repository, changes, and plan"}
+	}
+	ctx := options.Context
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	root, err := filepath.Abs(options.Root)
 	if err != nil {
@@ -61,14 +73,28 @@ func Execute(options Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	result := Result{}
 	committedPaths := []string{}
-	failedBeforeCommit := true
 	defer func() {
-		if failedBeforeCommit {
-			_ = restoreIndex(root, original)
+		if returnErr == nil {
+			return
+		}
+		var restoreErr error
+		if len(result.Hashes) == 0 {
+			restoreErr = restoreInitialIndex(root, original)
+		} else {
+			restoreErr = restoreOutsideIndex(root, original, committedPaths)
+		}
+		if restoreErr != nil {
+			returnErr = &Error{Code: ExitSafety, Message: "commit failed and index restoration is unknown", Restored: false}
+			return
+		}
+		if failure, ok := returnErr.(*Error); ok {
+			failure.Restored = true
 		}
 	}()
+	if err := interruption(ctx); err != nil {
+		return result, err
+	}
 
 	allIDs := make(map[string]bool, len(options.Changes))
 	byID := make(map[string]gitstate.Change, len(options.Changes))
@@ -81,6 +107,9 @@ func Execute(options Options) (Result, error) {
 	}
 	assigned := make(map[string]bool)
 	for _, commit := range options.Plan.Commits {
+		if err := interruption(ctx); err != nil {
+			return result, err
+		}
 		if len(commit.FileIDs) == 0 {
 			return result, &Error{Code: ExitSafety, Message: "commit plan contains an empty file assignment"}
 		}
@@ -102,13 +131,26 @@ func Execute(options Options) (Result, error) {
 			return result, err
 		}
 		message := commit.Subject()
-		cmd := exec.Command("git", "-C", root, "commit", "-m", message)
-		var output bytes.Buffer
-		cmd.Stdout = &output
-		cmd.Stderr = &output
+		parent, err := gitText(root, "rev-parse", "HEAD")
+		if err != nil {
+			return result, err
+		}
+		cmd := exec.CommandContext(ctx, "git", "-C", root, "commit", "-m", message)
+		var hookOutput bytes.Buffer
+		cmd.Stdout = &hookOutput
+		cmd.Stderr = &hookOutput
 		cmd.Env = append(os.Environ(), "LC_ALL=C")
 		if err := cmd.Run(); err != nil {
-			return result, &Error{Code: ExitSafety, Message: "git commit failed", HookOutput: terminalSafe(output.String())}
+			created := ""
+			if current, headErr := gitText(root, "rev-parse", "HEAD"); headErr == nil && current != parent {
+				created = current
+				result.Hashes = append(result.Hashes, current)
+				committedPaths = append(committedPaths, paths...)
+			}
+			if ctx.Err() != nil {
+				return result, &Error{Code: ExitInterrupted, Message: "commit execution interrupted", CommitHash: created, HookOutput: output.Escape(hookOutput.String())}
+			}
+			return result, &Error{Code: ExitSafety, Message: "git commit failed", CommitHash: created, HookOutput: output.Escape(hookOutput.String())}
 		}
 		hash, err := gitText(root, "rev-parse", "HEAD")
 		if err != nil {
@@ -118,12 +160,12 @@ func Execute(options Options) (Result, error) {
 		if err != nil {
 			return result, err
 		}
-		expected := pathSet(paths)
-		if !sameSet(actual, expected) {
-			return result, &Error{Code: ExitSafety, Message: "commit file set does not match its assignment", CommitHash: hash, Paths: sortedSetDifference(actual, expected)}
-		}
 		result.Hashes = append(result.Hashes, hash)
 		committedPaths = append(committedPaths, paths...)
+		expected := pathSet(paths)
+		if !sameSet(actual, expected) {
+			return result, &Error{Code: ExitSafety, Message: "commit file set does not match its assignment", CommitHash: hash, Paths: symmetricDifference(actual, expected)}
+		}
 		if err := restoreOutOfScopeIndex(root, original, unique(committedPaths)); err != nil {
 			return result, err
 		}
@@ -131,8 +173,14 @@ func Execute(options Options) (Result, error) {
 	if len(assigned) != len(allIDs) {
 		return result, &Error{Code: ExitSafety, Message: "commit plan does not assign every change"}
 	}
-	failedBeforeCommit = false
 	return result, nil
+}
+
+func interruption(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return &Error{Code: ExitInterrupted, Message: "commit execution interrupted"}
+	}
+	return nil
 }
 
 func verifyHashes(root string, changes []gitstate.Change, ids []string) error {
@@ -214,8 +262,22 @@ func restoreOutOfScopeIndex(root string, original []byte, planned []string) erro
 	}
 	defer os.Remove(tempPath)
 	env := append(os.Environ(), "GIT_INDEX_FILE="+tempPath, "LC_ALL=C")
-	for _, path := range planned {
-		if err := runGit(root, env, "add", "--", path); err != nil {
+	for _, path := range unique(planned) {
+		entry, err := gitBytes(root, "ls-tree", "-z", "HEAD", "--", path)
+		if err != nil {
+			return err
+		}
+		if len(entry) == 0 {
+			if err := runGit(root, env, "update-index", "--force-remove", "--", path); err != nil {
+				return err
+			}
+			continue
+		}
+		mode, object, ok := parseTreeEntry(entry, path)
+		if !ok {
+			return fmt.Errorf("cannot restore committed path in index")
+		}
+		if err := runGit(root, env, "update-index", "--add", "--cacheinfo", mode, object, path); err != nil {
 			return err
 		}
 	}
@@ -224,6 +286,19 @@ func restoreOutOfScopeIndex(root string, original []byte, planned []string) erro
 		return err
 	}
 	return os.WriteFile(indexPath(root), data, 0o600)
+}
+
+func parseTreeEntry(entry []byte, path string) (string, string, bool) {
+	entry = bytes.TrimSuffix(entry, []byte{0})
+	tab := bytes.IndexByte(entry, '\t')
+	if tab < 0 || string(entry[tab+1:]) != path {
+		return "", "", false
+	}
+	fields := strings.Fields(string(entry[:tab]))
+	if len(fields) != 3 {
+		return "", "", false
+	}
+	return fields[0], fields[2], true
 }
 
 func saveIndex(root string) ([]byte, error)       { return os.ReadFile(indexPath(root)) }
@@ -257,13 +332,7 @@ func changeKey(change gitstate.Change) string {
 	return change.Status + "\x00" + oldPath + "\x00" + newPath
 }
 func stagePaths(change gitstate.Change) []string {
-	if change.NewPath != nil {
-		return []string{*change.NewPath}
-	}
-	if change.OldPath != nil {
-		return []string{*change.OldPath}
-	}
-	return nil
+	return changePaths(change)
 }
 func allPlannedPaths(changes []gitstate.Change) []string {
 	var result []string
@@ -302,10 +371,15 @@ func sameSet(left, right map[string]bool) bool {
 	}
 	return true
 }
-func sortedSetDifference(left, right map[string]bool) []string {
+func symmetricDifference(left, right map[string]bool) []string {
 	var result []string
 	for key := range left {
 		if !right[key] {
+			result = append(result, key)
+		}
+	}
+	for key := range right {
+		if !left[key] {
 			result = append(result, key)
 		}
 	}
@@ -345,14 +419,4 @@ func gitBytes(root string, args ...string) ([]byte, error) {
 func gitText(root string, args ...string) (string, error) {
 	value, err := gitBytes(root, args...)
 	return strings.TrimSpace(string(value)), err
-}
-func terminalSafe(value string) string {
-	value = strings.ToValidUTF8(value, "")
-	var b strings.Builder
-	for _, r := range value {
-		if r == '\n' || r == '\r' || r == '\t' || (r >= 0x20 && r != 0x7f) {
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
 }
