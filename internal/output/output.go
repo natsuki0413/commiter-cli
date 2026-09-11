@@ -31,8 +31,22 @@ func (p *Printer) Value(value any) error {
 }
 
 func (p *Printer) Lines(lines ...string) error {
+	return writeLines(p.out, lines)
+}
+
+// PromptLines keeps machine-readable JSON on stdout by sending interactive
+// prompts to stderr in JSON mode.
+func (p *Printer) PromptLines(lines ...string) error {
+	writer := p.out
+	if p.json {
+		writer = p.err
+	}
+	return writeLines(writer, lines)
+}
+
+func writeLines(writer io.Writer, lines []string) error {
 	for _, line := range lines {
-		if _, err := fmt.Fprintln(p.out, Escape(line)); err != nil {
+		if _, err := fmt.Fprintln(writer, Escape(line)); err != nil {
 			return err
 		}
 	}

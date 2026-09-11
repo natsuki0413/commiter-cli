@@ -33,3 +33,13 @@ func TestJSONErrorDoesNotWriteStderr(t *testing.T) {
 		t.Fatalf("stdout = %q", got)
 	}
 }
+
+func TestJSONPromptWritesOnlyToStderr(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if err := New(&stdout, &stderr, true).PromptLines("candidate\npath"); err != nil {
+		t.Fatal(err)
+	}
+	if stdout.Len() != 0 || stderr.String() != `candidate\npath`+"\n" {
+		t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
