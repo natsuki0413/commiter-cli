@@ -112,7 +112,7 @@ func (r *Recorder) SetAnalysis(model string, files, lines int, bytes int64, synt
 	r.record.Counts.SyntaxFallback = syntaxFallback
 }
 
-func (r *Recorder) SetContext(model, contextStage string, summaries int) {
+func (r *Recorder) SetContext(model, contextStage string) {
 	if r == nil {
 		return
 	}
@@ -122,7 +122,15 @@ func (r *Recorder) SetContext(model, contextStage string, summaries int) {
 		r.record.Model = model
 	}
 	r.record.Context = contextStage
-	r.record.Counts.Summaries += summaries
+}
+
+func (r *Recorder) AddSummaries(count int) {
+	if r == nil || count <= 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.record.Counts.Summaries += count
 }
 
 func (r *Recorder) Finish(classification string) Record {

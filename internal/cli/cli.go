@@ -612,15 +612,15 @@ func runMain(opts options, printer *output.Printer) int {
 
 func finishMetrics(printer *output.Printer, recorder *runmetrics.Recorder, stateDir string, persist bool, code int) int {
 	record := recorder.Finish(exitClassification(code))
+	if err := reportMetrics(printer, record); err != nil {
+		return fail(printer, exitcode.New(exitcode.Internal, "cannot write metrics output"))
+	}
 	if persist {
 		if err := runmetrics.Write(stateDir, record); err != nil {
 			record = recorder.Finish(exitClassification(exitcode.Internal))
 			_ = reportMetrics(printer, record)
 			return fail(printer, exitcode.New(exitcode.Internal, err.Error()))
 		}
-	}
-	if err := reportMetrics(printer, record); err != nil {
-		return fail(printer, exitcode.New(exitcode.Internal, "cannot write metrics output"))
 	}
 	return code
 }

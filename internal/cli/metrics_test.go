@@ -220,10 +220,31 @@ func TestRecordSummarizationKeepsFailedPrepareProgress(t *testing.T) {
 
 	recorder = runmetrics.New()
 	recordSummarization(recorder, contextinput.Prepared{SummaryCount: 3, SummaryDuration: 40})
+	recorder.SetContext("model:tag", "32k")
 	partial := recorder.Finish("llm_error")
-	if partial.Durations.Summarization == nil || *partial.Durations.Summarization != 40 {
-		t.Fatalf("executed summarization was discarded: %+v", partial.Durations)
+	if partial.Durations.Summarization == nil || *partial.Durations.Summarization != 40 || partial.Counts.Summaries != 3 {
+		t.Fatalf("executed summarization was discarded: durations=%+v counts=%+v", partial.Durations, partial.Counts)
 	}
+}
+
+func TestFinishMetricsDoesNotPersistStaleExitWhenOutputFails(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "state")
+	recorder := runmetrics.New()
+	var stderr bytes.Buffer
+
+	code := finishMetrics(output.New(failingWriter{}, &stderr, false), recorder, stateDir, true, exitcode.Success)
+	if code != exitcode.Internal || !strings.Contains(stderr.String(), "cannot write metrics output") {
+		t.Fatalf("code=%d stderr=%q", code, stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "metrics.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("stale success metrics were persisted: %v", err)
+	}
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) {
+	return 0, errors.New("fixture output failure")
 }
 
 func TestRecordGeneratedTelemetryKeepsPartialSuccessAndOmitsEmpty(t *testing.T) {

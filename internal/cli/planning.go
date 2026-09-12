@@ -50,7 +50,7 @@ func generateCommitPlan(ctx context.Context, root string, snapshot gitstate.Snap
 		return planning.Plan{}, err
 	}
 	contextStage := fmt.Sprintf("%dk", prepared.Budget.ContextTokens/1024)
-	recorder.SetContext(values.Model, contextStage, prepared.SummaryCount)
+	recorder.SetContext(values.Model, contextStage)
 	runtime, err := ollama.Open(ctx, values)
 	if err != nil {
 		return planning.Plan{}, err
@@ -65,13 +65,14 @@ func generateCommitPlan(ctx context.Context, root string, snapshot gitstate.Snap
 	if model == "" {
 		model = values.Model
 	}
-	recorder.SetContext(model, contextStage, 0)
+	recorder.SetContext(model, contextStage)
 	return generated.Plan, nil
 }
 
 func recordSummarization(recorder *runmetrics.Recorder, prepared contextinput.Prepared) {
 	if prepared.SummaryCount > 0 {
 		recorder.AddDuration(runmetrics.Summarization, prepared.SummaryDuration)
+		recorder.AddSummaries(prepared.SummaryCount)
 	}
 }
 
