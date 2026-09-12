@@ -180,7 +180,7 @@ Git によって名前変更（rename）と認識された変更は、削除と�
 
 ### FR-003 ファイル分類
 
-CLI は、機密判定および除外処理が完了した後の各対象変更に対して、一意で安定した file ID、ステータス、old path、new path、言語、ファイルサイズ、バイナリ判定結果、および change_hash を付与しなければなりません。名前変更以外の変更では、old path と new path のうち該当しない側を null として正規化できます。自動除外されたファイルやユーザーによって拒否されたファイルに対して、file ID を付与してはなりません。
+CLI は、機密判定および除外処理が完了した後の各対象変更に対して、安定した file ID、ステータス、old path、new path、言語、ファイルサイズ、バイナリ判定結果、および change_hash を付与しなければなりません。名前変更以外の変更では、old path と new path のうち該当しない側を null として正規化できます。自動除外されたファイルやユーザーによって拒否されたファイルに対して、file ID を付与してはなりません。
 
 change_hash は、スキーマバージョン `1`、ステータス、old path、new path、old mode、new mode、HEAD 側の Git オブジェクト識別子、ならびにワーキングツリー最終状態の種別および識別子を含む、正規化 JSON（canonical JSON）の UTF-8 バイト列から SHA-256 により算出しなければなりません。該当しないフィールドは null とし、オブジェクトのキー順序は固定します。
 
@@ -305,7 +305,7 @@ CLI は全コミットが正常に完了した後に一度だけプッシュを�
 
 ### FR-018 metrics
 
-CLI は、Git の前処理、構文解析、モデルのロード、プロンプト評価、計画生成、要約、検証、Git コミット、プッシュの各所要時間と、モデルのタグまたはダイジェスト、コンテキスト段階、ファイル数、行数、バイト数、Tree-sitter 解析の成功／フォールバックファイル数、要約回数、および終了分類を表示しなければなりません。
+CLI は、Git の前処理、構文解析、モデルのロード、プロンプト評価、計画生成、要約、検証、Git 操作、プッシュの各所要時間と、モデルのタグまたはダイジェスト、コンテキスト段階、ファイル数、行数、バイト数、Tree-sitter 解析の成功／フォールバックファイル数、要約回数、および終了分類を表示しなければなりません。
 
 ### FR-019 daemon lifecycle
 
@@ -357,7 +357,7 @@ setup は Homebrew 自体をインストールしてはなりません。
 
 ## 10. LLM 入力と出力
 
-Ollama エンドポイントはループバックアドレス（127.0.0.1）に限定し、`think: false`、`stream: false`、JSON Schema、`keep_alive: 0` を使用します。commiter v1 が必要とする API 機能、デフォルトモデル `qwen3.5:4b-q4_K_M` の動作互換性、および thinking を無効化したモデルにおける構造化出力（structured outputs）の修正を踏まえ、対応する Ollama のバージョンは `0.31.2` 以上とします。下位バージョン、`0.31.2` のプレリリース版、および不正なバージョン応答は API 非互換として扱います。[Ollama Chat API](https://docs.ollama.com/api/chat)、[Structured Outputs](https://docs.ollama.com/capabilities/structured-outputs)、[Ollama v0.31.2](https://github.com/ollama/ollama/releases/tag/v0.31.2) を参照してください。
+Ollama エンドポイントはループバックに限定し、`think: false`、`stream: false`、JSON Schema、`keep_alive: 0` を使用します。commiter v1 が必要とする API 機能、デフォルトモデル `qwen3.5:4b-q4_K_M` の動作互換性、および thinking を無効化したモデルにおける構造化出力（structured outputs）の修正を踏まえ、対応する Ollama のバージョンは `0.31.2` 以上とします。下位バージョン、`0.31.2` のプレリリース版、および不正なバージョン応答は API 非互換として扱います。[Ollama Chat API](https://docs.ollama.com/api/chat)、[Structured Outputs](https://docs.ollama.com/capabilities/structured-outputs)、[Ollama v0.31.2](https://github.com/ollama/ollama/releases/tag/v0.31.2) を参照してください。
 
 入力には、機械的に計算したリポジトリ状態、対象 file ID、変更前後のパス（old/new path）、ステータス、言語、change_hash、構造エビデンス、ならびに必要な raw diff hunk または階層要約を含めます。構造エビデンスは構文上の客観的な観測事実に限定し、実装とテスト、ドキュメントとソースコード、同一機能、同一の論理的変更といった意味的な関係性ラベルやグルーピングの推奨は含めません。
 
@@ -428,9 +428,9 @@ CLI は検証の実行前に現在の検証定義（verification definition）�
 
 ### SR-001 ローカル送信境界
 
-commiter 自身が LLM 推論、差分解析、テレメトリ、その他の補助処理のために、差分、プロンプト、LLM 応答、その他リポジトリの内容をループバックインターフェース（127.0.0.1）の外部へ送信してはなりません。
+commiter 自身が LLM 推論、差分解析、テレメトリ、その他の補助処理のために、差分、プロンプト、LLM 応答、その他リポジトリの内容をループバック（loopback）の外部へ送信してはなりません。
 
-ただし、ユーザーが明示的に許可した Git プッシュ、およびユーザーが承認した検証コマンド、Git フック、署名処理などの子プロセスによって発生する通信は、本制約の対象外とします。
+ただし、ユーザーが許可した Git プッシュ、およびユーザーが承認した検証コマンド、Git フック、署名処理などの子プロセスによって発生する通信は、本制約の対象外とします。
 
 ### SR-002 機密ファイルの事前判定
 
