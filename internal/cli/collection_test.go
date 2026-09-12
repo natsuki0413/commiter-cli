@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -24,6 +25,38 @@ import (
 	"github.com/natsuki0413/commiter-cli/internal/planning"
 	"github.com/natsuki0413/commiter-cli/internal/verification"
 )
+
+func TestMainInterruptsDuringPlanningBeforeCommit(t *testing.T) {
+	repo := cliRepository(t)
+	cliWrite(t, repo, "a.txt", "base\n", 0o644)
+	cliGit(t, repo, "add", "a.txt")
+	cliGit(t, repo, "commit", "-m", "base")
+	cliWrite(t, repo, "a.txt", "changed\n", 0o644)
+	beforeHead := cliGitOutput(t, repo, "rev-parse", "HEAD")
+	chdir(t, repo)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	previous := planFlow
+	planFlow = func(ctx context.Context, _ string, _ gitstate.Snapshot, _ config.Values, _ string) (planning.Plan, error) {
+		if err := syscall.Kill(syscall.Getpid(), syscall.SIGINT); err != nil {
+			t.Fatalf("send SIGINT: %v", err)
+		}
+		<-ctx.Done()
+		return planning.Plan{}, ctx.Err()
+	}
+	t.Cleanup(func() { planFlow = previous })
+
+	var stdout, stderr bytes.Buffer
+	if code := Run([]string{"--no-push"}, &stdout, &stderr); code != exitcode.Interrupted {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "before commit") {
+		t.Fatalf("stderr=%q", stderr.String())
+	}
+	if got := cliGitOutput(t, repo, "rev-parse", "HEAD"); got != beforeHead {
+		t.Fatalf("HEAD changed after interruption: before=%s after=%s", beforeHead, got)
+	}
+}
 
 func TestDryRunCollectsSnapshotThroughExistingCLIBoundaries(t *testing.T) {
 	repo := cliRepository(t)

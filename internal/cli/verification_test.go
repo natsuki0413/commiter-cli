@@ -2,15 +2,62 @@ package cli
 
 import (
 	"bytes"
+	"context"
+	"errors"
+	"io"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/natsuki0413/commiter-cli/internal/exitcode"
 	"github.com/natsuki0413/commiter-cli/internal/output"
 	"github.com/natsuki0413/commiter-cli/internal/trust"
 	"github.com/natsuki0413/commiter-cli/internal/verification"
 )
+
+func TestAuthorizeVerificationDefinitionContextStopsWhileWaiting(t *testing.T) {
+	input := &blockingVerificationReader{started: make(chan struct{}), release: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	repo, stateDir := t.TempDir(), t.TempDir()
+	definition := &verification.Definition{
+		SchemaVersion: 1,
+		SourceType:    verification.SourceRepoConfig,
+		Commands:      []verification.Command{{Name: "test", CWD: ".", Argv: []string{"go", "test"}}},
+	}
+	var stdout, stderr bytes.Buffer
+	done := make(chan error, 1)
+	go func() {
+		done <- authorizeVerificationDefinitionContext(ctx, repo, stateDir, definition, input, output.New(&stdout, &stderr, false))
+	}()
+	<-input.started
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("error=%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("verification approval did not stop after cancellation")
+	}
+	close(input.release)
+}
+
+type blockingVerificationReader struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (r *blockingVerificationReader) Read([]byte) (int, error) {
+	select {
+	case <-r.started:
+	default:
+		close(r.started)
+	}
+	<-r.release
+	return 0, io.EOF
+}
 
 func TestAuthorizeVerificationDefinitionPrintsNoneWithoutTrust(t *testing.T) {
 	stateDir := t.TempDir()

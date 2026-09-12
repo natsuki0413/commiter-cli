@@ -5,6 +5,7 @@ package interaction
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -49,6 +50,13 @@ type Reviewer struct {
 }
 
 func (r Reviewer) Review(request ReviewRequest) (Decision, string, error) {
+	return r.ReviewContext(context.Background(), request)
+}
+
+// ReviewContext presents a plan and stops waiting for input when ctx is
+// canceled. It is used by the CLI so SIGINT before commit execution is not
+// mistaken for a rejected plan or an internal error.
+func (r Reviewer) ReviewContext(ctx context.Context, request ReviewRequest) (Decision, string, error) {
 	if r.In == nil || r.Printer == nil {
 		return Reject, "", errors.New("review input and output are required")
 	}
@@ -59,7 +67,7 @@ func (r Reviewer) Review(request ReviewRequest) (Decision, string, error) {
 		return Reject, "", err
 	}
 	reader := buffered(r.In)
-	answer, err := readLine(reader)
+	answer, err := readLineContext(ctx, reader)
 	if err != nil {
 		if errors.Is(err, io.EOF) {
 			return Reject, "", nil
@@ -76,7 +84,7 @@ func (r Reviewer) Review(request ReviewRequest) (Decision, string, error) {
 		if err := r.Printer.Lines("Why should the plan be regenerated?"); err != nil {
 			return Reject, "", err
 		}
-		supplement, err := readLine(reader)
+		supplement, err := readLineContext(ctx, reader)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				return Reject, "", nil
@@ -89,6 +97,26 @@ func (r Reviewer) Review(request ReviewRequest) (Decision, string, error) {
 		return Regenerate, supplement, nil
 	default:
 		return Reject, "", nil
+	}
+}
+
+func readLineContext(ctx context.Context, reader *bufio.Reader) (string, error) {
+	result := make(chan struct {
+		line string
+		err  error
+	}, 1)
+	go func() {
+		line, err := readLine(reader)
+		result <- struct {
+			line string
+			err  error
+		}{line, err}
+	}()
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case outcome := <-result:
+		return outcome.line, outcome.err
 	}
 }
 

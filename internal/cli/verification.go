@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,10 @@ import (
 // later pipeline executes verification. Keeping it separate prevents the
 // currently incomplete main pipeline from asking for approval too early.
 func authorizeVerificationDefinition(repo, stateDir string, definition *verification.Definition, input io.Reader, printer *output.Printer) error {
+	return authorizeVerificationDefinitionContext(context.Background(), repo, stateDir, definition, input, printer)
+}
+
+func authorizeVerificationDefinitionContext(ctx context.Context, repo, stateDir string, definition *verification.Definition, input io.Reader, printer *output.Printer) error {
 	if definition == nil {
 		return printer.Lines("Verification: none")
 	}
@@ -58,8 +63,11 @@ func authorizeVerificationDefinition(repo, stateDir string, definition *verifica
 		if err := printer.Lines(lines...); err != nil {
 			return false, fmt.Errorf("cannot write output")
 		}
-		line, err := readVerificationLine(input)
+		line, err := readVerificationLineContext(ctx, input)
 		if err != nil {
+			if ctx.Err() != nil {
+				return false, ctx.Err()
+			}
 			return false, nil
 		}
 		return strings.EqualFold(strings.TrimSpace(line), "y"), nil
@@ -75,4 +83,24 @@ func readVerificationLine(input io.Reader) (string, error) {
 		return reader.ReadString('\n')
 	}
 	return bufio.NewReader(input).ReadString('\n')
+}
+
+func readVerificationLineContext(ctx context.Context, input io.Reader) (string, error) {
+	result := make(chan struct {
+		line string
+		err  error
+	}, 1)
+	go func() {
+		line, err := readVerificationLine(input)
+		result <- struct {
+			line string
+			err  error
+		}{line, err}
+	}()
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case outcome := <-result:
+		return outcome.line, outcome.err
+	}
 }
