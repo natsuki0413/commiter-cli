@@ -60,6 +60,17 @@ func TestExecuteKeepsFailureOutputPrivate(t *testing.T) {
 	}
 }
 
+func TestExecuteReturnsContextCancellationSeparately(t *testing.T) {
+	repo := t.TempDir()
+	runGit(t, repo, "init", "-b", "main")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	target := interaction.PushTarget{Remote: "origin", Branch: "main", Resolved: true}
+	if err := Execute(ctx, repo, target); !errors.Is(err, context.Canceled) {
+		t.Fatalf("error=%v", err)
+	}
+}
+
 func pushRepository(t *testing.T) (string, string) {
 	t.Helper()
 	remote := filepath.Join(t.TempDir(), "remote.git")

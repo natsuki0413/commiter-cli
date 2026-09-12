@@ -1,15 +1,18 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -342,15 +345,17 @@ func TestMainForcesPushConfirmationForSensitiveCandidate(t *testing.T) {
 	}
 }
 
-func TestMainReturnsPushExitAndKeepsCommitsOnResolutionOrTransportFailure(t *testing.T) {
+func TestMainClassifiesPushFailuresAndKeepsCommits(t *testing.T) {
 	for _, test := range []struct {
 		name       string
 		addRemote  bool
 		pushError  error
 		pushCalled bool
+		wantCode   int
 	}{
-		{name: "unresolved target"},
-		{name: "transport failure", addRemote: true, pushError: errors.New("git push failed; local commits were kept"), pushCalled: true},
+		{name: "unresolved target", wantCode: exitcode.Push},
+		{name: "transport failure", addRemote: true, pushError: errors.New("git push failed; local commits were kept"), pushCalled: true, wantCode: exitcode.Push},
+		{name: "interrupted", addRemote: true, pushError: context.Canceled, pushCalled: true, wantCode: exitcode.Interrupted},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			repo := cliRepository(t)
@@ -373,7 +378,7 @@ func TestMainReturnsPushExitAndKeepsCommitsOnResolutionOrTransportFailure(t *tes
 			stubPush(t, func(context.Context, string, interaction.PushTarget) error { pushes++; return test.pushError })
 
 			var stdout, stderr bytes.Buffer
-			if code := Run(nil, &stdout, &stderr); code != exitcode.Push || (pushes == 1) != test.pushCalled {
+			if code := Run(nil, &stdout, &stderr); code != test.wantCode || (pushes == 1) != test.pushCalled {
 				t.Fatalf("code=%d pushes=%d stdout=%q stderr=%q", code, pushes, stdout.String(), stderr.String())
 			}
 			if !strings.Contains(stdout.String(), "fixture-hash") || !strings.Contains(stderr.String(), "local commits were kept") {
@@ -381,6 +386,39 @@ func TestMainReturnsPushExitAndKeepsCommitsOnResolutionOrTransportFailure(t *tes
 			}
 		})
 	}
+}
+
+func TestReadYesContextStopsWhileWaitingForInput(t *testing.T) {
+	input := &blockingReader{started: make(chan struct{}), release: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := readYesContext(ctx, bufio.NewReader(input))
+		done <- err
+	}()
+	<-input.started
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("error=%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("confirmation did not stop after cancellation")
+	}
+	close(input.release)
+}
+
+type blockingReader struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (r *blockingReader) Read([]byte) (int, error) {
+	r.once.Do(func() { close(r.started) })
+	<-r.release
+	return 0, io.EOF
 }
 
 func TestMainStopsOnVerificationMutationAndRestoresInitialIndex(t *testing.T) {

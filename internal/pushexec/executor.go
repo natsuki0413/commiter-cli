@@ -36,6 +36,9 @@ func Execute(ctx context.Context, root string, target interaction.PushTarget) er
 	command := exec.CommandContext(ctx, "git", args...)
 	command.Env = append(os.Environ(), "LC_ALL=C")
 	if err := command.Run(); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		return ErrPush
 	}
 	return nil

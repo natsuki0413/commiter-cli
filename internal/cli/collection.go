@@ -253,6 +253,9 @@ approved:
 	}
 	forceConfirmation := snapshotContainsSensitive(snapshot)
 	if values.PushConfirm || forceConfirmation {
+		if ctx.Err() != nil {
+			return fail(printer, exitcode.New(exitcode.Interrupted, "push interrupted; local commits were kept")), false
+		}
 		if forceConfirmation && !values.PushConfirm {
 			if err := printer.Lines("Push confirmation is required because this run committed an approved sensitive candidate."); err != nil {
 				return fail(printer, exitcode.New(exitcode.Internal, "cannot write push confirmation reason")), false
@@ -261,13 +264,20 @@ approved:
 		if err := printer.PromptLines(fmt.Sprintf("Push to %s/%s? [y/N]", actualTarget.Remote, actualTarget.Branch)); err != nil {
 			return fail(printer, exitcode.New(exitcode.Internal, "cannot write push confirmation")), false
 		}
-		if !readYes(reader) {
+		approved, err := readYesContext(ctx, reader)
+		if err != nil {
+			return fail(printer, exitcode.New(exitcode.Interrupted, "push interrupted; local commits were kept")), false
+		}
+		if !approved {
 			return fail(printer, exitcode.New(exitcode.Canceled, "push declined; local commits were kept")), false
 		}
 	} else if err := printer.Lines("Push confirmation skipped by configuration."); err != nil {
 		return fail(printer, exitcode.New(exitcode.Internal, "cannot write output")), false
 	}
 	if err := pushFlow(ctx, root, actualTarget); err != nil {
+		if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+			return fail(printer, exitcode.New(exitcode.Interrupted, "push interrupted; local commits were kept")), false
+		}
 		return fail(printer, exitcode.New(exitcode.Push, err.Error())), false
 	}
 	if err := printer.Lines("Push completed."); err != nil {
@@ -283,6 +293,25 @@ func snapshotContainsSensitive(snapshot gitstate.Snapshot) bool {
 		}
 	}
 	return false
+}
+
+func readYesContext(ctx context.Context, reader *bufio.Reader) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	result := make(chan bool, 1)
+	go func() {
+		result <- readYes(reader)
+	}()
+	select {
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case approved := <-result:
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		return approved, nil
+	}
 }
 
 func collectSnapshot(root string, values config.Values, pathspecs []string, approve func([]gitstate.Candidate) (bool, error)) (gitstate.Snapshot, error) {
