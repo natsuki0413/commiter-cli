@@ -68,7 +68,8 @@ func runCollectionCycle(opts options, root string, values config.Values, reader 
 		return exitcode.Success, false
 	}
 
-	initialState, err := verification.CaptureRepositoryState(root, snapshot.Untracked)
+	statePolicy := verificationStatePolicy(snapshot, values)
+	initialState, err := verification.CaptureRepositoryState(root, statePolicy)
 	if err != nil {
 		return fail(printer, exitcode.New(exitcode.Safety, err.Error())), false
 	}
@@ -135,7 +136,7 @@ approved:
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	runResult, runErr := verificationFlow(ctx, root, definition, time.Duration(values.Timeout)*time.Second, snapshot.Untracked)
+	runResult, runErr := verificationFlow(ctx, root, definition, time.Duration(values.Timeout)*time.Second, statePolicy)
 	if err := printVerificationResults(printer, runResult); err != nil {
 		if restoreErr := initialState.RestoreIndex(); restoreErr != nil {
 			return fail(printer, exitcode.New(exitcode.Commit, "verification output failed and index restoration is unknown")), false
@@ -156,7 +157,7 @@ approved:
 		return fail(printer, exitcode.New(exitcode.Verification, runErr.Error())), false
 	}
 
-	afterState, stateErr := verification.CaptureRepositoryState(root, snapshot.Untracked)
+	afterState, stateErr := verification.CaptureRepositoryState(root, statePolicy)
 	current, collectErr := revalidateSnapshot(root, values, opts.pathspecs, snapshot)
 	if ctx.Err() != nil {
 		if err := initialState.RestoreIndex(); err != nil {
@@ -274,6 +275,20 @@ func revalidateSnapshot(root string, values config.Values, pathspecs []string, o
 		}
 		return true, nil
 	})
+}
+
+func verificationStatePolicy(snapshot gitstate.Snapshot, values config.Values) verification.StatePolicy {
+	approved := []string{}
+	for _, change := range snapshot.Changes {
+		if change.Sensitive {
+			approved = append(approved, snapshotChangePaths(change)...)
+		}
+	}
+	return verification.StatePolicy{
+		TargetUntracked:          append([]string{}, snapshot.Untracked...),
+		ApprovedSensitive:        uniqueStrings(approved),
+		AdditionalSensitiveGlobs: append([]string{}, values.SensitivePatterns...),
+	}
 }
 
 func changedSnapshotPaths(before, after gitstate.Snapshot) []string {

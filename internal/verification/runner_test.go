@@ -21,7 +21,7 @@ func TestRunExecutesArgvSequentiallyWithoutShell(t *testing.T) {
 		{Name: "first", CWD: ".", Argv: []string{"printf", "%s", "one; printf injected"}},
 		{Name: "second", CWD: ".", Argv: []string{"printf", "%s", "two"}},
 	}}
-	result, err := Run(context.Background(), root, definition, time.Second, nil)
+	result, err := Run(context.Background(), root, definition, 5*time.Second, StatePolicy{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +36,7 @@ func TestRunStopsAfterFailureAndKeepsOutput(t *testing.T) {
 		{Name: "failure", CWD: ".", Argv: []string{"sh", "-c", "printf failed; exit 9"}},
 		{Name: "unreached", CWD: ".", Argv: []string{"sh", "-c", "printf reached"}},
 	}}
-	result, err := Run(context.Background(), verificationRepository(t), definition, time.Second, nil)
+	result, err := Run(context.Background(), verificationRepository(t), definition, time.Second, StatePolicy{})
 	var failure *RunError
 	if !errors.As(err, &failure) || failure.Kind != RunFailed || failure.Command != "failure" {
 		t.Fatalf("error = %#v", err)
@@ -53,7 +53,7 @@ func TestRunAttributesGitVisibleMutationToCommand(t *testing.T) {
 	gitVerification(t, root, "commit", "-m", "base")
 	definition := &Definition{Commands: []Command{{Name: "mutator", CWD: ".", Argv: []string{"sh", "-c", "printf changed > tracked.txt"}}}}
 
-	result, err := Run(context.Background(), root, definition, time.Second, nil)
+	result, err := Run(context.Background(), root, definition, time.Second, StatePolicy{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestRunAttributesGitVisibleMutationToCommand(t *testing.T) {
 func TestRunClassifiesTimeoutAndInterruption(t *testing.T) {
 	definition := &Definition{Commands: []Command{{Name: "wait", CWD: ".", Argv: []string{"sh", "-c", "sleep 5"}}}}
 	root := verificationRepository(t)
-	_, err := Run(context.Background(), root, definition, 10*time.Millisecond, nil)
+	_, err := Run(context.Background(), root, definition, 10*time.Millisecond, StatePolicy{})
 	var failure *RunError
 	if !errors.As(err, &failure) || failure.Kind != RunTimedOut {
 		t.Fatalf("timeout error = %#v", err)
@@ -73,7 +73,7 @@ func TestRunClassifiesTimeoutAndInterruption(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err = Run(ctx, root, definition, time.Second, nil)
+	_, err = Run(ctx, root, definition, time.Second, StatePolicy{})
 	if !errors.As(err, &failure) || failure.Kind != RunInterrupted {
 		t.Fatalf("interruption error = %#v", err)
 	}
@@ -85,13 +85,13 @@ func TestRepositoryStateDetectsWorktreeAndRestoresIndex(t *testing.T) {
 	gitVerification(t, repo, "add", "tracked.txt")
 	gitVerification(t, repo, "commit", "-m", "base")
 	writeVerificationFile(t, repo, "tracked.txt", "before\n")
-	before, err := CaptureRepositoryState(repo, nil)
+	before, err := CaptureRepositoryState(repo, StatePolicy{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	writeVerificationFile(t, repo, "tracked.txt", "after mutation\n")
 	gitVerification(t, repo, "add", "tracked.txt")
-	after, err := CaptureRepositoryState(repo, nil)
+	after, err := CaptureRepositoryState(repo, StatePolicy{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestRepositoryStateDetectsWorktreeAndRestoresIndex(t *testing.T) {
 	if err := before.RestoreIndex(); err != nil {
 		t.Fatal(err)
 	}
-	restored, err := CaptureRepositoryState(repo, nil)
+	restored, err := CaptureRepositoryState(repo, StatePolicy{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,14 +116,14 @@ func TestRepositoryStateDetectsUntrackedAndIndexOnlyMutations(t *testing.T) {
 	gitVerification(t, repo, "add", "tracked.txt")
 	gitVerification(t, repo, "commit", "-m", "base")
 	writeVerificationFile(t, repo, "tracked.txt", "changed\n")
-	before, err := CaptureRepositoryState(repo, nil)
+	before, err := CaptureRepositoryState(repo, StatePolicy{})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	gitVerification(t, repo, "add", "tracked.txt")
 	writeVerificationFile(t, repo, "untracked.txt", "new\n")
-	after, err := CaptureRepositoryState(repo, []string{"untracked.txt"})
+	after, err := CaptureRepositoryState(repo, StatePolicy{TargetUntracked: []string{"untracked.txt"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,12 +134,12 @@ func TestRepositoryStateDetectsUntrackedAndIndexOnlyMutations(t *testing.T) {
 
 func TestRepositoryStateIgnoresUnselectedUntrackedFiles(t *testing.T) {
 	repo := verificationRepository(t)
-	before, err := CaptureRepositoryState(repo, []string{"target.txt"})
+	before, err := CaptureRepositoryState(repo, StatePolicy{TargetUntracked: []string{"target.txt"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	writeVerificationFile(t, repo, "coverage.out", "not selected\n")
-	afterOutside, err := CaptureRepositoryState(repo, []string{"target.txt"})
+	afterOutside, err := CaptureRepositoryState(repo, StatePolicy{TargetUntracked: []string{"target.txt"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestRepositoryStateIgnoresUnselectedUntrackedFiles(t *testing.T) {
 	}
 
 	writeVerificationFile(t, repo, "target.txt", "selected\n")
-	afterTarget, err := CaptureRepositoryState(repo, []string{"target.txt"})
+	afterTarget, err := CaptureRepositoryState(repo, StatePolicy{TargetUntracked: []string{"target.txt"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +168,7 @@ func TestRepositoryStateHashesDirtyTrackedContentIndependentlyOfMetadata(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	before, err := CaptureRepositoryState(repo, nil)
+	before, err := CaptureRepositoryState(repo, StatePolicy{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,12 +177,120 @@ func TestRepositoryStateHashesDirtyTrackedContentIndependentlyOfMetadata(t *test
 	if err := os.Chtimes(path, info.ModTime(), info.ModTime()); err != nil {
 		t.Fatal(err)
 	}
-	after, err := CaptureRepositoryState(repo, nil)
+	after, err := CaptureRepositoryState(repo, StatePolicy{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := ChangedPaths(before, after); !reflect.DeepEqual(got, []string{"tracked.txt"}) {
 		t.Fatalf("same-size same-mtime content mutation = %#v", got)
+	}
+}
+
+func TestRepositoryStateDoesNotOpenExcludedOrUnapprovedSensitiveContent(t *testing.T) {
+	repo := verificationRepository(t)
+	for _, name := range []string{".env", "credentials.json", "private.cfg", "safe.txt"} {
+		writeVerificationFile(t, repo, name, "base\n")
+	}
+	gitVerification(t, repo, "add", ".env", "credentials.json", "private.cfg", "safe.txt")
+	gitVerification(t, repo, "commit", "-m", "base")
+	for _, name := range []string{".env", "credentials.json", "private.cfg", "safe.txt"} {
+		writeVerificationFile(t, repo, name, "changed\n")
+	}
+
+	previousOpen := openContent
+	opened := []string{}
+	openContent = func(path string) (*os.File, error) {
+		opened = append(opened, filepath.Base(path))
+		return os.Open(path)
+	}
+	t.Cleanup(func() { openContent = previousOpen })
+
+	state, err := CaptureRepositoryState(repo, StatePolicy{
+		ApprovedSensitive:        []string{".env", "private.cfg"},
+		AdditionalSensitiveGlobs: []string{"private.cfg"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(opened, []string{"safe.txt"}) {
+		t.Fatalf("opened files = %#v, want only safe.txt", opened)
+	}
+	for _, name := range []string{".env", "credentials.json", "private.cfg"} {
+		if identity := state.Files[name].ContentIdentity; identity != "" {
+			t.Fatalf("sensitive content identity for %s = %q", name, identity)
+		}
+	}
+}
+
+func TestRepositoryStateHashesApprovedSensitiveCandidate(t *testing.T) {
+	repo := verificationRepository(t)
+	writeVerificationFile(t, repo, "credentials.json", "base\n")
+	gitVerification(t, repo, "add", "credentials.json")
+	gitVerification(t, repo, "commit", "-m", "base")
+	writeVerificationFile(t, repo, "credentials.json", "aaaa\n")
+	path := filepath.Join(repo, "credentials.json")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := StatePolicy{ApprovedSensitive: []string{"credentials.json"}}
+	before, err := CaptureRepositoryState(repo, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	writeVerificationFile(t, repo, "credentials.json", "bbbb\n")
+	if err := os.Chtimes(path, info.ModTime(), info.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	after, err := CaptureRepositoryState(repo, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ChangedPaths(before, after); !reflect.DeepEqual(got, []string{"credentials.json"}) {
+		t.Fatalf("approved sensitive content mutation = %#v", got)
+	}
+}
+
+func TestRepositoryStateAppliesSensitivePolicyToWholeRename(t *testing.T) {
+	tests := []struct {
+		name       string
+		oldPath    string
+		policy     StatePolicy
+		wantOpened []string
+	}{
+		{name: "unapproved candidate", oldPath: "credentials.json"},
+		{name: "automatic exclusion", oldPath: ".env", policy: StatePolicy{ApprovedSensitive: []string{".env", "safe.txt"}}},
+		{name: "additional exclusion", oldPath: "private.cfg", policy: StatePolicy{ApprovedSensitive: []string{"private.cfg", "safe.txt"}, AdditionalSensitiveGlobs: []string{"private.cfg"}}},
+		{name: "approved candidate", oldPath: "credentials.json", policy: StatePolicy{ApprovedSensitive: []string{"credentials.json", "safe.txt"}}, wantOpened: []string{"safe.txt"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			repo := verificationRepository(t)
+			writeVerificationFile(t, repo, test.oldPath, "fixture\n")
+			gitVerification(t, repo, "add", test.oldPath)
+			gitVerification(t, repo, "commit", "-m", "base")
+			gitVerification(t, repo, "mv", test.oldPath, "safe.txt")
+
+			previousOpen := openContent
+			var opened []string
+			openContent = func(path string) (*os.File, error) {
+				opened = append(opened, filepath.Base(path))
+				return os.Open(path)
+			}
+			t.Cleanup(func() { openContent = previousOpen })
+
+			state, err := CaptureRepositoryState(repo, test.policy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(opened, test.wantOpened) {
+				t.Fatalf("opened files = %#v, want %#v", opened, test.wantOpened)
+			}
+			if (state.Files["safe.txt"].ContentIdentity != "") != (len(test.wantOpened) > 0) {
+				t.Fatalf("safe.txt content identity = %q", state.Files["safe.txt"].ContentIdentity)
+			}
+		})
 	}
 }
 

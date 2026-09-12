@@ -47,7 +47,7 @@ type RunResult struct {
 
 // Run executes an approved definition sequentially without invoking a shell.
 // timeout applies to the complete verification sequence.
-func Run(ctx context.Context, root string, definition *Definition, timeout time.Duration, targetUntracked []string) (RunResult, error) {
+func Run(ctx context.Context, root string, definition *Definition, timeout time.Duration, policy StatePolicy) (RunResult, error) {
 	if definition == nil {
 		return RunResult{}, nil
 	}
@@ -62,7 +62,7 @@ func Run(ctx context.Context, root string, definition *Definition, timeout time.
 
 	result := RunResult{Commands: make([]CommandResult, 0, len(definition.Commands))}
 	for _, command := range definition.Commands {
-		before, stateErr := CaptureRepositoryState(root, targetUntracked)
+		before, stateErr := CaptureRepositoryState(root, policy)
 		if stateErr != nil {
 			return result, &RunError{Kind: RunFailed, Command: command.Name}
 		}
@@ -73,7 +73,7 @@ func Run(ctx context.Context, root string, definition *Definition, timeout time.
 		process.Stdout = &combined
 		process.Stderr = &combined
 		err := process.Run()
-		after, afterErr := CaptureRepositoryState(root, targetUntracked)
+		after, afterErr := CaptureRepositoryState(root, policy)
 		var changed []string
 		if afterErr != nil {
 			changed = []string{"<repository-state>"}

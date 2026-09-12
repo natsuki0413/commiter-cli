@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -223,7 +224,7 @@ func TestMainRunsVerificationBeforeCommit(t *testing.T) {
 
 	order := []string{}
 	stubPostApprovalFlows(t,
-		func(context.Context, string, *verification.Definition, time.Duration, []string) (verification.RunResult, error) {
+		func(context.Context, string, *verification.Definition, time.Duration, verification.StatePolicy) (verification.RunResult, error) {
 			order = append(order, "verification")
 			return verification.RunResult{}, nil
 		},
@@ -257,7 +258,7 @@ func TestMainStopsOnVerificationMutationAndRestoresInitialIndex(t *testing.T) {
 	t.Cleanup(func() { mainInput = oldInput })
 	commitCalled := false
 	stubPostApprovalFlows(t,
-		func(context.Context, string, *verification.Definition, time.Duration, []string) (verification.RunResult, error) {
+		func(context.Context, string, *verification.Definition, time.Duration, verification.StatePolicy) (verification.RunResult, error) {
 			cliWrite(t, repo, "a.txt", "verification mutation\n", 0o644)
 			cliGit(t, repo, "add", "a.txt")
 			return verification.RunResult{Commands: []verification.CommandResult{{Name: "fixture"}}}, nil
@@ -301,7 +302,7 @@ func TestMainReanalyzesCurrentStateAfterMutationApproval(t *testing.T) {
 	runs := 0
 	commits := 0
 	stubPostApprovalFlows(t,
-		func(context.Context, string, *verification.Definition, time.Duration, []string) (verification.RunResult, error) {
+		func(context.Context, string, *verification.Definition, time.Duration, verification.StatePolicy) (verification.RunResult, error) {
 			runs++
 			if runs == 1 {
 				cliWrite(t, repo, "a.txt", "reanalyzed\n", 0o644)
@@ -337,7 +338,7 @@ func TestMainMapsVerificationFailureAndEscapesOutput(t *testing.T) {
 	mainInput = strings.NewReader("y\n")
 	t.Cleanup(func() { mainInput = oldInput })
 	stubPostApprovalFlows(t,
-		func(context.Context, string, *verification.Definition, time.Duration, []string) (verification.RunResult, error) {
+		func(context.Context, string, *verification.Definition, time.Duration, verification.StatePolicy) (verification.RunResult, error) {
 			return verification.RunResult{Commands: []verification.CommandResult{{Name: "fixture", Output: "bad\x1b[2J\nforged"}}}, &verification.RunError{Kind: verification.RunFailed, Command: "fixture"}
 		},
 		func(commitexec.Options) (commitexec.Result, error) {
@@ -371,7 +372,7 @@ func TestMainAllowsIgnoredVerificationOutput(t *testing.T) {
 	t.Cleanup(func() { mainInput = oldInput })
 	commitCalled := false
 	stubPostApprovalFlows(t,
-		func(context.Context, string, *verification.Definition, time.Duration, []string) (verification.RunResult, error) {
+		func(context.Context, string, *verification.Definition, time.Duration, verification.StatePolicy) (verification.RunResult, error) {
 			cliWrite(t, repo, "generated/output.txt", "ignored\n", 0o644)
 			return verification.RunResult{}, nil
 		},
@@ -402,7 +403,7 @@ func TestMainAllowsUnselectedUntrackedVerificationOutput(t *testing.T) {
 	t.Cleanup(func() { mainInput = oldInput })
 	commitCalled := false
 	stubPostApprovalFlows(t,
-		func(context.Context, string, *verification.Definition, time.Duration, []string) (verification.RunResult, error) {
+		func(context.Context, string, *verification.Definition, time.Duration, verification.StatePolicy) (verification.RunResult, error) {
 			cliWrite(t, repo, "coverage.out", "outside selected pathspec\n", 0o644)
 			return verification.RunResult{}, nil
 		},
@@ -433,7 +434,7 @@ func TestMainStopsForNewUntrackedInsideSelection(t *testing.T) {
 	t.Cleanup(func() { mainInput = oldInput })
 	commitCalled := false
 	stubPostApprovalFlows(t,
-		func(context.Context, string, *verification.Definition, time.Duration, []string) (verification.RunResult, error) {
+		func(context.Context, string, *verification.Definition, time.Duration, verification.StatePolicy) (verification.RunResult, error) {
 			cliWrite(t, repo, "new-target.txt", "new target\n", 0o644)
 			return verification.RunResult{}, nil
 		},
@@ -470,7 +471,7 @@ func TestMainDetectsUnselectedDirtyTrackedContentWithStableMetadata(t *testing.T
 	t.Cleanup(func() { mainInput = oldInput })
 	commitCalled := false
 	stubPostApprovalFlows(t,
-		func(context.Context, string, *verification.Definition, time.Duration, []string) (verification.RunResult, error) {
+		func(context.Context, string, *verification.Definition, time.Duration, verification.StatePolicy) (verification.RunResult, error) {
 			info, err := os.Stat(outsidePath)
 			if err != nil {
 				t.Fatal(err)
@@ -496,7 +497,28 @@ func TestMainDetectsUnselectedDirtyTrackedContentWithStableMetadata(t *testing.T
 	}
 }
 
-func stubPostApprovalFlows(t *testing.T, verify func(context.Context, string, *verification.Definition, time.Duration, []string) (verification.RunResult, error), commit func(commitexec.Options) (commitexec.Result, error)) {
+func TestVerificationStatePolicyCarriesOnlyApprovedSensitiveChanges(t *testing.T) {
+	oldPath, newPath, ordinaryPath := "old-credentials.json", "new-credentials.json", "ordinary.txt"
+	snapshot := gitstate.Snapshot{
+		Untracked: []string{"target.txt"},
+		Changes: []gitstate.Change{
+			{OldPath: &oldPath, NewPath: &newPath, Sensitive: true},
+			{NewPath: &ordinaryPath},
+		},
+	}
+	policy := verificationStatePolicy(snapshot, config.Values{SensitivePatterns: []string{"private.cfg"}})
+	if !reflect.DeepEqual(policy.TargetUntracked, []string{"target.txt"}) {
+		t.Fatalf("target untracked = %#v", policy.TargetUntracked)
+	}
+	if !reflect.DeepEqual(policy.ApprovedSensitive, []string{"new-credentials.json", "old-credentials.json"}) {
+		t.Fatalf("approved sensitive = %#v", policy.ApprovedSensitive)
+	}
+	if !reflect.DeepEqual(policy.AdditionalSensitiveGlobs, []string{"private.cfg"}) {
+		t.Fatalf("additional sensitive globs = %#v", policy.AdditionalSensitiveGlobs)
+	}
+}
+
+func stubPostApprovalFlows(t *testing.T, verify func(context.Context, string, *verification.Definition, time.Duration, verification.StatePolicy) (verification.RunResult, error), commit func(commitexec.Options) (commitexec.Result, error)) {
 	t.Helper()
 	previousVerification, previousCommit := verificationFlow, commitFlow
 	verificationFlow, commitFlow = verify, commit

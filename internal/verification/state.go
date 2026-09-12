@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/natsuki0413/commiter-cli/internal/gitstate"
 )
 
 type fileState struct {
@@ -31,7 +33,13 @@ type RepositoryState struct {
 	Files     map[string]fileState
 }
 
-func CaptureRepositoryState(root string, targetUntracked []string) (RepositoryState, error) {
+type StatePolicy struct {
+	TargetUntracked          []string
+	ApprovedSensitive        []string
+	AdditionalSensitiveGlobs []string
+}
+
+func CaptureRepositoryState(root string, policy StatePolicy) (RepositoryState, error) {
 	head, err := gitOutput(root, "rev-parse", "--verify", "HEAD")
 	if err != nil {
 		return RepositoryState{}, fmt.Errorf("cannot inspect HEAD before commit")
@@ -56,7 +64,7 @@ func CaptureRepositoryState(root string, targetUntracked []string) (RepositorySt
 	if err != nil {
 		return RepositoryState{}, fmt.Errorf("cannot inspect Git-visible state before commit")
 	}
-	files, err := statusFileStates(root, status, stringSet(targetUntracked))
+	files, err := statusFileStates(root, status, policy)
 	if err != nil {
 		return RepositoryState{}, err
 	}
@@ -104,15 +112,18 @@ func ChangedPaths(before, after RepositoryState) []string {
 	return result
 }
 
-func statusFileStates(root string, status []byte, targetUntracked map[string]bool) (map[string]fileState, error) {
+func statusFileStates(root string, status []byte, policy StatePolicy) (map[string]fileState, error) {
 	records := bytes.Split(bytes.TrimSuffix(status, []byte{0}), []byte{0})
 	result := map[string]fileState{}
+	targetUntracked := stringSet(policy.TargetUntracked)
+	approvedSensitive := stringSet(policy.ApprovedSensitive)
 	for index := 0; index < len(records); index++ {
 		record := string(records[index])
 		if record == "" {
 			continue
 		}
 		path := ""
+		oldPath := ""
 		switch record[0] {
 		case '?':
 			if len(record) < 3 {
@@ -135,18 +146,28 @@ func statusFileStates(root string, status []byte, targetUntracked map[string]boo
 			}
 			path = fields[9]
 			index++
-			oldPath := string(records[index])
-			state, err := fileMetadata(root, oldPath, record+"\x00"+oldPath)
-			if err != nil {
-				return nil, err
-			}
-			result[oldPath] = state
+			oldPath = string(records[index])
 		case 'u':
 			return nil, fmt.Errorf("repository has unresolved conflicts")
 		default:
 			return nil, fmt.Errorf("cannot parse Git-visible state")
 		}
-		state, err := fileMetadata(root, path, record)
+		paths := []string{path}
+		if oldPath != "" {
+			paths = append(paths, oldPath)
+		}
+		hashContent, err := contentHashAllowed(paths, policy.AdditionalSensitiveGlobs, approvedSensitive)
+		if err != nil {
+			return nil, err
+		}
+		if oldPath != "" {
+			state, err := fileMetadata(root, oldPath, record+"\x00"+oldPath, hashContent)
+			if err != nil {
+				return nil, err
+			}
+			result[oldPath] = state
+		}
+		state, err := fileMetadata(root, path, record, hashContent)
 		if err != nil {
 			return nil, err
 		}
@@ -155,7 +176,7 @@ func statusFileStates(root string, status []byte, targetUntracked map[string]boo
 	return result, nil
 }
 
-func fileMetadata(root, path, record string) (fileState, error) {
+func fileMetadata(root, path, record string, hashContent bool) (fileState, error) {
 	state := fileState{Record: record}
 	absolute := filepath.Join(root, filepath.FromSlash(path))
 	info, err := os.Lstat(absolute)
@@ -168,12 +189,27 @@ func fileMetadata(root, path, record string) (fileState, error) {
 	state.Mode = info.Mode()
 	state.Size = info.Size()
 	state.ModTime = info.ModTime().UnixNano()
-	identity, err := contentIdentity(absolute, info)
-	if err != nil {
-		return fileState{}, err
+	if hashContent {
+		identity, err := contentIdentity(absolute, info)
+		if err != nil {
+			return fileState{}, err
+		}
+		state.ContentIdentity = identity
 	}
-	state.ContentIdentity = identity
 	return state, nil
+}
+
+func contentHashAllowed(paths []string, additional []string, approved map[string]bool) (bool, error) {
+	for _, path := range paths {
+		allowed, err := gitstate.ContentReadAllowed(path, additional, approved[path])
+		if err != nil {
+			return false, err
+		}
+		if !allowed {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func contentIdentity(path string, info os.FileInfo) (string, error) {
@@ -185,7 +221,7 @@ func contentIdentity(path string, info os.FileInfo) (string, error) {
 		}
 		source = strings.NewReader(target)
 	} else if info.Mode().IsRegular() {
-		file, err := os.Open(path)
+		file, err := openContent(path)
 		if err != nil {
 			return "", fmt.Errorf("cannot hash Git-visible file")
 		}
@@ -200,6 +236,8 @@ func contentIdentity(path string, info os.FileInfo) (string, error) {
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
+
+var openContent = os.Open
 
 func stringSet(values []string) map[string]bool {
 	result := make(map[string]bool, len(values))
