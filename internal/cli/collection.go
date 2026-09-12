@@ -20,6 +20,7 @@ import (
 	"github.com/natsuki0413/commiter-cli/internal/interaction"
 	"github.com/natsuki0413/commiter-cli/internal/output"
 	"github.com/natsuki0413/commiter-cli/internal/planning"
+	"github.com/natsuki0413/commiter-cli/internal/pushexec"
 	"github.com/natsuki0413/commiter-cli/internal/verification"
 )
 
@@ -27,6 +28,7 @@ var mainInput io.Reader = os.Stdin
 
 var verificationFlow = verification.Run
 var commitFlow = commitexec.Execute
+var pushFlow = pushexec.Execute
 
 func runCollection(opts options, root string, values config.Values, printer *output.Printer) int {
 	reader := bufio.NewReader(mainInput)
@@ -231,7 +233,56 @@ approved:
 	if err := printer.Lines(lines...); err != nil {
 		return fail(printer, exitcode.New(exitcode.Internal, "cannot write output")), false
 	}
+	if !values.PushEnabled {
+		if err := printer.Lines("Push skipped by configuration; local commits were kept."); err != nil {
+			return fail(printer, exitcode.New(exitcode.Internal, "cannot write output")), false
+		}
+		return exitcode.Success, false
+	}
+
+	actualTarget := interaction.ResolvePushTarget(root)
+	if !actualTarget.Resolved {
+		return fail(printer, exitcode.New(exitcode.Push, actualTarget.Reason+"; local commits were kept")), false
+	}
+	if err := printer.Lines(
+		fmt.Sprintf("Push target: %s/%s", actualTarget.Remote, actualTarget.Branch),
+		"Push includes all outgoing commits from the current branch, including commits created before this run.",
+		"Pre-existing outgoing commits are not re-analyzed or reclassified for sensitive content.",
+	); err != nil {
+		return fail(printer, exitcode.New(exitcode.Internal, "cannot write push summary")), false
+	}
+	forceConfirmation := snapshotContainsSensitive(snapshot)
+	if values.PushConfirm || forceConfirmation {
+		if forceConfirmation && !values.PushConfirm {
+			if err := printer.Lines("Push confirmation is required because this run committed an approved sensitive candidate."); err != nil {
+				return fail(printer, exitcode.New(exitcode.Internal, "cannot write push confirmation reason")), false
+			}
+		}
+		if err := printer.PromptLines(fmt.Sprintf("Push to %s/%s? [y/N]", actualTarget.Remote, actualTarget.Branch)); err != nil {
+			return fail(printer, exitcode.New(exitcode.Internal, "cannot write push confirmation")), false
+		}
+		if !readYes(reader) {
+			return fail(printer, exitcode.New(exitcode.Canceled, "push declined; local commits were kept")), false
+		}
+	} else if err := printer.Lines("Push confirmation skipped by configuration."); err != nil {
+		return fail(printer, exitcode.New(exitcode.Internal, "cannot write output")), false
+	}
+	if err := pushFlow(ctx, root, actualTarget); err != nil {
+		return fail(printer, exitcode.New(exitcode.Push, err.Error())), false
+	}
+	if err := printer.Lines("Push completed."); err != nil {
+		return fail(printer, exitcode.New(exitcode.Internal, "cannot write output")), false
+	}
 	return exitcode.Success, false
+}
+
+func snapshotContainsSensitive(snapshot gitstate.Snapshot) bool {
+	for _, change := range snapshot.Changes {
+		if change.Sensitive {
+			return true
+		}
+	}
+	return false
 }
 
 func collectSnapshot(root string, values config.Values, pathspecs []string, approve func([]gitstate.Candidate) (bool, error)) (gitstate.Snapshot, error) {
