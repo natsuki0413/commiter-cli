@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/natsuki0413/commiter-cli/internal/commitexec"
 	"github.com/natsuki0413/commiter-cli/internal/config"
+	"github.com/natsuki0413/commiter-cli/internal/contextinput"
 	"github.com/natsuki0413/commiter-cli/internal/exitcode"
 	"github.com/natsuki0413/commiter-cli/internal/gitstate"
 	"github.com/natsuki0413/commiter-cli/internal/interaction"
@@ -175,6 +177,55 @@ func TestMainMetricsMatchFailureBoundary(t *testing.T) {
 	}
 }
 
+func TestGitPreprocessingExcludesSensitiveApprovalWait(t *testing.T) {
+	repo := cliRepository(t)
+	cliWrite(t, repo, "README.md", "base\n", 0o644)
+	cliGit(t, repo, "add", "README.md")
+	cliGit(t, repo, "commit", "-m", "base")
+	cliWrite(t, repo, "auth.json", "local-only\n", 0o600)
+	chdir(t, repo)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	const delay = 250 * time.Millisecond
+	previousInput := mainInput
+	mainInput = &delayedReader{delay: delay, inner: strings.NewReader("n\n")}
+	t.Cleanup(func() { mainInput = previousInput })
+
+	var stdout, stderr bytes.Buffer
+	started := time.Now()
+	code := Run([]string{"--record-metrics"}, &stdout, &stderr)
+	elapsed := time.Since(started)
+	if code != exitcode.Success || !strings.Contains(stdout.String(), "Read all listed candidates?") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	record := readMetricRecord(t, filepath.Join(stateHome, "commiter", "metrics.jsonl"))
+	if record.Durations.GitPreprocessing == nil {
+		t.Fatalf("record=%+v", record)
+	}
+	git := time.Duration(*record.Durations.GitPreprocessing)
+	if git+delay/2 >= elapsed {
+		t.Fatalf("approval wait was included in git preprocessing: git=%s elapsed=%s delay=%s", git, elapsed, delay)
+	}
+}
+
+func TestRecordSummarizationKeepsFailedPrepareProgress(t *testing.T) {
+	recorder := runmetrics.New()
+	recordSummarization(recorder, contextinput.Prepared{})
+	empty := recorder.Finish("llm_error")
+	if empty.Durations.Summarization != nil {
+		t.Fatalf("unexecuted summarization was recorded: %+v", empty.Durations)
+	}
+
+	recorder = runmetrics.New()
+	recordSummarization(recorder, contextinput.Prepared{SummaryCount: 3, SummaryDuration: 40})
+	partial := recorder.Finish("llm_error")
+	if partial.Durations.Summarization == nil || *partial.Durations.Summarization != 40 {
+		t.Fatalf("executed summarization was discarded: %+v", partial.Durations)
+	}
+}
+
 func TestRecordGeneratedTelemetryKeepsPartialSuccessAndOmitsEmpty(t *testing.T) {
 	recorder := runmetrics.New()
 	recordGeneratedTelemetry(recorder, planning.Result{})
@@ -193,6 +244,20 @@ func TestRecordGeneratedTelemetryKeepsPartialSuccessAndOmitsEmpty(t *testing.T) 
 		partial.Durations.Generation == nil || *partial.Durations.Generation != 30 {
 		t.Fatalf("partial telemetry was discarded: %+v", partial.Durations)
 	}
+}
+
+type delayedReader struct {
+	delay   time.Duration
+	inner   io.Reader
+	delayed bool
+}
+
+func (reader *delayedReader) Read(p []byte) (int, error) {
+	if !reader.delayed {
+		reader.delayed = true
+		time.Sleep(reader.delay)
+	}
+	return reader.inner.Read(p)
 }
 
 func readMetricRecord(t *testing.T, path string) runmetrics.Record {

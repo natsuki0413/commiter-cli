@@ -44,6 +44,7 @@ func runCollection(opts options, root string, values config.Values, printer *out
 
 func runCollectionCycle(opts options, root string, values config.Values, reader *bufio.Reader, printer *output.Printer, repeatedMutation map[string]int, recorder *runmetrics.Recorder) (int, bool) {
 	started := time.Now()
+	var approvalWait time.Duration
 	snapshot, err := collectSnapshot(root, values, opts.pathspecs, func(candidates []gitstate.Candidate) (bool, error) {
 		lines := []string{"Sensitive candidates require approval before reading:"}
 		for _, candidate := range candidates {
@@ -53,9 +54,12 @@ func runCollectionCycle(opts options, root string, values config.Values, reader 
 		if err := printer.PromptLines(lines...); err != nil {
 			return false, err
 		}
-		return readYes(reader), nil
+		waitStarted := time.Now()
+		approved := readYes(reader)
+		approvalWait += time.Since(waitStarted)
+		return approved, nil
 	})
-	recorder.AddDuration(runmetrics.GitPreprocessing, time.Since(started))
+	recorder.AddDuration(runmetrics.GitPreprocessing, time.Since(started)-approvalWait)
 	if err != nil {
 		return fail(printer, classifyCollectionError(err)), false
 	}

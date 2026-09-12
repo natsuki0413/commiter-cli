@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/natsuki0413/commiter-cli/internal/syntax"
 )
@@ -71,9 +72,9 @@ func TestPrepareRejectsIncompleteSummaryBeforeRenderingOrPlanning(t *testing.T) 
 		document.Files[0].ChangeHash = "rewritten"
 		return document, nil
 	})
-	_, err := Prepare(context.Background(), document, BudgetConfig{Context: "auto", MaxContextTokens: Context8K}, render, summarizer)
-	if err == nil || !strings.Contains(err.Error(), "summary is incomplete") || renders != 1 {
-		t.Fatalf("renders=%d error=%v", renders, err)
+	prepared, err := Prepare(context.Background(), document, BudgetConfig{Context: "auto", MaxContextTokens: Context8K}, render, summarizer)
+	if err == nil || !strings.Contains(err.Error(), "summary is incomplete") || renders != 1 || prepared.SummaryCount != 1 {
+		t.Fatalf("renders=%d count=%d error=%v", renders, prepared.SummaryCount, err)
 	}
 }
 
@@ -112,24 +113,26 @@ func TestPrepareRejectsMissingOrDuplicateFileAndEvidenceChanges(t *testing.T) {
 func TestPrepareStopsAfterSummaryFailureOrFinalOverflow(t *testing.T) {
 	document := testDocument()
 	failure := errors.New("summary unavailable")
-	_, err := Prepare(context.Background(), document, BudgetConfig{Context: "8k", MaxContextTokens: Context32K}, func(Document) ([]byte, error) {
+	failed, err := Prepare(context.Background(), document, BudgetConfig{Context: "8k", MaxContextTokens: Context32K}, func(Document) ([]byte, error) {
 		return make([]byte, Context8K), nil
 	}, summarizeFunc(func(context.Context, SummaryStage, Document) (Document, error) {
+		time.Sleep(time.Millisecond)
 		return Document{}, failure
 	}))
-	if !errors.Is(err, failure) {
-		t.Fatalf("error=%v", err)
+	if !errors.Is(err, failure) || failed.SummaryCount != 1 || failed.SummaryDuration <= 0 {
+		t.Fatalf("failed=%#v error=%v", failed, err)
 	}
 
 	stages := 0
-	_, err = Prepare(context.Background(), document, BudgetConfig{Context: "8k", MaxContextTokens: Context32K}, func(Document) ([]byte, error) {
+	overflow, err := Prepare(context.Background(), document, BudgetConfig{Context: "8k", MaxContextTokens: Context32K}, func(Document) ([]byte, error) {
 		return make([]byte, Context8K), nil
 	}, summarizeFunc(func(_ context.Context, _ SummaryStage, document Document) (Document, error) {
 		stages++
+		time.Sleep(time.Millisecond)
 		return document, nil
 	}))
-	if !errors.Is(err, ErrTooLarge) || stages != 3 {
-		t.Fatalf("stages=%d error=%v", stages, err)
+	if !errors.Is(err, ErrTooLarge) || stages != 3 || overflow.SummaryCount != 3 || overflow.SummaryDuration <= 0 {
+		t.Fatalf("stages=%d overflow=%#v error=%v", stages, overflow, err)
 	}
 }
 

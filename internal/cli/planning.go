@@ -45,11 +45,9 @@ func generateCommitPlan(ctx context.Context, root string, snapshot gitstate.Snap
 		renderer = supplementRenderer(renderer, supplement)
 	}
 	prepared, err := contextinput.Prepare(ctx, document, contextinput.BudgetConfig{Context: values.Context, MaxContextTokens: values.MaxTokens}, renderer, nil)
+	recordSummarization(recorder, prepared)
 	if err != nil {
 		return planning.Plan{}, err
-	}
-	if prepared.SummaryCount > 0 {
-		recorder.AddDuration(runmetrics.Summarization, prepared.SummaryDuration)
 	}
 	contextStage := fmt.Sprintf("%dk", prepared.Budget.ContextTokens/1024)
 	recorder.SetContext(values.Model, contextStage, prepared.SummaryCount)
@@ -69,6 +67,12 @@ func generateCommitPlan(ctx context.Context, root string, snapshot gitstate.Snap
 	}
 	recorder.SetContext(model, contextStage, 0)
 	return generated.Plan, nil
+}
+
+func recordSummarization(recorder *runmetrics.Recorder, prepared contextinput.Prepared) {
+	if prepared.SummaryCount > 0 {
+		recorder.AddDuration(runmetrics.Summarization, prepared.SummaryDuration)
+	}
 }
 
 func recordGeneratedTelemetry(recorder *runmetrics.Recorder, generated planning.Result) {
