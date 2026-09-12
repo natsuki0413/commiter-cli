@@ -34,6 +34,15 @@ func (p *Printer) Lines(lines ...string) error {
 	return writeLines(p.out, lines)
 }
 
+// Report keeps the primary JSON document on stdout intact by writing
+// supplemental machine-readable execution data to stderr in JSON mode.
+func (p *Printer) Report(value any, lines ...string) error {
+	if p.json {
+		return json.NewEncoder(p.err).Encode(value)
+	}
+	return writeLines(p.out, lines)
+}
+
 // PromptLines keeps machine-readable JSON on stdout by sending interactive
 // prompts to stderr in JSON mode.
 func (p *Printer) PromptLines(lines ...string) error {

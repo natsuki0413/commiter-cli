@@ -29,11 +29,13 @@ func (generator Generator) Generate(ctx context.Context, prepared contextinput.P
 		return Result{}, err
 	}
 	calls, retryAvailable := 0, true
+	telemetry := Telemetry{}
 	request := func(messages []ollama.Message) (ollama.ChatResponse, error) {
 		for {
 			calls++
 			response, callErr := generator.Client.Chat(ctx, messages, schema)
 			if callErr == nil {
+				telemetry.add(response)
 				return response, nil
 			}
 			if !retryAvailable || !ollama.IsRetryable(callErr) || ctx.Err() != nil {
@@ -52,7 +54,7 @@ func (generator Generator) Generate(ctx context.Context, prepared contextinput.P
 	}
 	plan, violations := Validate([]byte(response.Content), fileIDs, sensitive)
 	if len(violations) == 0 {
-		return Result{Plan: plan, Calls: calls}, nil
+		return Result{Plan: plan, Calls: calls, Telemetry: telemetry}, nil
 	}
 	repair, err := repairMessages(prepared.Prompt, []byte(response.Content), violations)
 	if err != nil {
@@ -66,7 +68,16 @@ func (generator Generator) Generate(ctx context.Context, prepared contextinput.P
 	if len(violations) != 0 {
 		return Result{}, generationError()
 	}
-	return Result{Plan: plan, Calls: calls, Repaired: true}, nil
+	return Result{Plan: plan, Calls: calls, Repaired: true, Telemetry: telemetry}, nil
+}
+
+func (telemetry *Telemetry) add(response ollama.ChatResponse) {
+	telemetry.Model = response.Model
+	telemetry.LoadDuration += response.LoadDuration
+	telemetry.PromptEvalDuration += response.PromptEvalDuration
+	telemetry.EvalDuration += response.EvalDuration
+	telemetry.PromptEvalCount += response.PromptEvalCount
+	telemetry.EvalCount += response.EvalCount
 }
 
 func repairMessages(original, candidate []byte, violations []Violation) ([]ollama.Message, error) {

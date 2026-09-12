@@ -264,9 +264,29 @@ func TestGeneratorKeepsSchemaForJapaneseSummary(t *testing.T) {
 	}
 }
 
+func TestGeneratorAggregatesOnlyNonContentTelemetry(t *testing.T) {
+	client := &scriptedChat{steps: []chatStep{{
+		content: validPlan(), model: "model:tag", loadDuration: 2,
+		promptEvalDuration: 3, evalDuration: 5, promptEvalCount: 7, evalCount: 11,
+	}}}
+	result, err := (Generator{Client: client}).Generate(context.Background(), preparedInput(t, English), English, SensitiveValues{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Telemetry != (Telemetry{Model: "model:tag", LoadDuration: 2, PromptEvalDuration: 3, EvalDuration: 5, PromptEvalCount: 7, EvalCount: 11}) {
+		t.Fatalf("telemetry=%+v", result.Telemetry)
+	}
+}
+
 type chatStep struct {
-	content string
-	err     error
+	content            string
+	err                error
+	model              string
+	loadDuration       int64
+	promptEvalDuration int64
+	evalDuration       int64
+	promptEvalCount    int
+	evalCount          int
 }
 
 type scriptedChat struct {
@@ -281,7 +301,11 @@ func (client *scriptedChat) Chat(_ context.Context, messages []ollama.Message, s
 	}
 	step := client.steps[0]
 	client.steps = client.steps[1:]
-	return ollama.ChatResponse{Content: step.content}, step.err
+	return ollama.ChatResponse{
+		Model: step.model, Content: step.content, LoadDuration: step.loadDuration,
+		PromptEvalDuration: step.promptEvalDuration, EvalDuration: step.evalDuration,
+		PromptEvalCount: step.promptEvalCount, EvalCount: step.evalCount,
+	}, step.err
 }
 
 func preparedInput(t *testing.T, language Language) contextinput.Prepared {

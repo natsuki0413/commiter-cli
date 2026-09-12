@@ -14,6 +14,7 @@ import (
 
 	"github.com/natsuki0413/commiter-cli/internal/config"
 	"github.com/natsuki0413/commiter-cli/internal/exitcode"
+	runmetrics "github.com/natsuki0413/commiter-cli/internal/metrics"
 	"github.com/natsuki0413/commiter-cli/internal/ollama"
 	"github.com/natsuki0413/commiter-cli/internal/output"
 	"github.com/natsuki0413/commiter-cli/internal/repository"
@@ -604,7 +605,80 @@ func runMain(opts options, printer *output.Printer) int {
 	if err != nil {
 		return fail(printer, exitcode.New(exitcode.Usage, err.Error()))
 	}
-	return runCollection(opts, root, effective.Values, printer)
+	recorder := runmetrics.New()
+	code := runCollection(opts, root, effective.Values, printer, recorder)
+	return finishMetrics(printer, recorder, paths.StateDir, effective.Values.MetricsPersist, code)
+}
+
+func finishMetrics(printer *output.Printer, recorder *runmetrics.Recorder, stateDir string, persist bool, code int) int {
+	record := recorder.Finish(exitClassification(code))
+	if persist {
+		if err := runmetrics.Write(stateDir, record); err != nil {
+			record = recorder.Finish(exitClassification(exitcode.Internal))
+			_ = reportMetrics(printer, record)
+			return fail(printer, exitcode.New(exitcode.Internal, err.Error()))
+		}
+	}
+	if err := reportMetrics(printer, record); err != nil {
+		return fail(printer, exitcode.New(exitcode.Internal, "cannot write metrics output"))
+	}
+	return code
+}
+
+func reportMetrics(printer *output.Printer, record runmetrics.Record) error {
+	lines := []string{"Metrics:"}
+	appendDuration := func(name string, value *int64) {
+		if value != nil {
+			lines = append(lines, fmt.Sprintf("%s: %s", name, time.Duration(*value)))
+		}
+	}
+	appendDuration("git preprocessing", record.Durations.GitPreprocessing)
+	appendDuration("syntax analysis", record.Durations.SyntaxAnalysis)
+	appendDuration("model load", record.Durations.ModelLoad)
+	appendDuration("prompt evaluation", record.Durations.PromptEvaluation)
+	appendDuration("generation", record.Durations.Generation)
+	appendDuration("summarization", record.Durations.Summarization)
+	appendDuration("verification", record.Durations.Verification)
+	appendDuration("git", record.Durations.Git)
+	appendDuration("push", record.Durations.Push)
+	if record.Model != "" {
+		lines = append(lines, "model: "+record.Model)
+	}
+	if record.Context != "" {
+		lines = append(lines, "context: "+record.Context)
+	}
+	lines = append(lines,
+		fmt.Sprintf("counts: files=%d lines=%d bytes=%d syntax_success=%d syntax_fallback=%d summaries=%d",
+			record.Counts.Files, record.Counts.Lines, record.Counts.Bytes, record.Counts.SyntaxSuccess,
+			record.Counts.SyntaxFallback, record.Counts.Summaries),
+		"exit: "+record.Exit,
+	)
+	return printer.Report(map[string]any{"metrics": record}, lines...)
+}
+
+func exitClassification(code int) string {
+	switch code {
+	case exitcode.Success:
+		return "success"
+	case exitcode.Usage:
+		return "usage_error"
+	case exitcode.Canceled:
+		return "canceled"
+	case exitcode.Safety:
+		return "safety_stop"
+	case exitcode.LLM:
+		return "llm_error"
+	case exitcode.Verification:
+		return "verification_failed"
+	case exitcode.Commit:
+		return "commit_failed"
+	case exitcode.Push:
+		return "push_failed"
+	case exitcode.Interrupted:
+		return "interrupted"
+	default:
+		return "internal_error"
+	}
 }
 
 func overrides(opts options) config.CLIOverrides {
