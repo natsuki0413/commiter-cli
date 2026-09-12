@@ -1,5 +1,7 @@
 # commiter-cli ソフトウェア要求仕様書
 
+日本語 | [English](SOFTWARE_REQUIREMENTS_SPECIFICATION_en.md)
+
 | 項目 | 内容 |
 | --- | --- |
 | 文書状態 | Draft v0.1 |
@@ -9,120 +11,120 @@
 
 ## 1. 目的と背景
 
-対話型コーディングエージェントを毎回起動して差分分析、コミット分割、コミット、push を実行すると、推論時間とトークン消費が発生します。
+対話型コーディングエージェントを都度起動して差分解析、コミット分割、コミット作成、プッシュを実行すると、推論待ち時間（レイテンシ）とトークン消費が発生します。
 
-本システムは、Git 操作と差分前処理を機械的に実行し、Tree-sitter による syntax-aware structural analysis で構文上の事実を抽出したうえで、変更の意味・目的とコミット計画の生成だけをローカル LLM に委ねます。これにより、低パラメータ・量子化モデルへ構文認識まで負担させることを避け、生成精度と速度を維持しながら入力サイズと外部送信リスクを抑えます。
+本システムは、Git 操作と差分の前処理を機械的に実行し、Tree-sitter による構文認識構造解析（syntax-aware structural analysis）によって構文上の客観的な事実を抽出した上で、変更の意味・目的の解釈およびコミット計画の生成のみをローカル LLM に委ねます。これにより、低パラメータかつ量子化されたモデルに構文認識の負荷を負わせることを避け、生成精度と処理速度を維持しながら、入力サイズと外部へのデータ送信リスクを抑制します。
 
 ## 2. 目標
 
-- Git の staged、unstaged、未追跡の変更から、対象範囲を再現可能に確定する。
-- Git と構文木から機械的に観測可能な事実を構造化し、変更の意味・目的とファイル grouping だけをローカル LLM に判断させて Conventional Commits の計画を生成する。
-- 計画、検証コマンド、機密判定結果を表示し、既定では明示的な確認後だけ Git の状態を変更する。明確な機密ファイルは常に自動除外し、疑義のある機密候補だけを読取前に確認する。
-- global 設定または CLI によって commit 確認と push 確認を個別に省略できるが、疑義のある機密候補の読取確認と、今回の実行で機密候補として対象化した file を含む commit の push 確認は省略できない。明確な機密ファイルは設定や CLI で override できず、commiter の commit 対象へ含めない。
-- commit を目的単位に分割し、完了後に一度だけ安全な push を実行する。
-- 生成に使用する差分をローカルマシン外へ送信しない。
+- Git の staged、unstaged、および未追跡（untracked）の変更から、処理対象の範囲を再現可能な形で確定する。
+- Git や構文木から機械的に観測可能な事実を構造化し、変更の意味・目的の判断およびファイルのグルーピングのみをローカル LLM に行わせて、Conventional Commits に準拠したコミット計画を生成する。
+- コミット計画、検証コマンド、および機密判定結果を表示し、デフォルトでは明示的な確認を経てからのみ Git の状態を変更する。明確な機密ファイルは常に自動除外とし、機密の疑いがある候補（機密候補）のみ内容の読み取り前に確認を求める。
+- グローバル設定または CLI オプションによってコミット確認やプッシュ確認を個別に省略可能とする。ただし、機密候補の読み取り確認、および今回の実行で機密候補として対象に含めたファイルを含むコミットのプッシュ確認は省略できない。明確な機密ファイルは設定や CLI でオーバーライドできず、commiter のコミット対象には一切含めない。
+- コミットを変更目的ごとに分割し、すべてのコミットが完了した後に一度だけ安全なプッシュを実行する。
+- 計画生成に使用する差分をローカルマシンの外部へ一切送信しない。
 
 ## 3. 非目標
 
-v1 では Windows と Linux、GUI、クラウド LLM、llama.cpp backend、Homebrew Tap、hunk 単位の分割、型解決、symbol resolution、control-flow graph、data-flow analysis などの semantic static analysis、submodule 内部への再帰、複数利用者向けの配布を対象にしません。
+v1 では、Windows および Linux、GUI、クラウド LLM、llama.cpp バックエンド、Homebrew Tap、hunk 単位でのコミット分割、型解決・シンボル解決・制御フローグラフ・データフロー解析などの意味的な静的解析（semantic static analysis）、サブモジュール内部への再帰的探索、ならびに複数ユーザー向けの配布を対象外とします。
 
-本リポジトリの初期化フェーズでは README と本仕様書だけを成果物とし、実装コード、Go モジュール、LICENSE、CI、リリース自動化、remote 設定を作成しません。
+本リポジトリの初期化フェーズでは README と本仕様書のみを成果物とし、実装コード、Go モジュール、LICENSE、CI、リリース自動化、およびリモートリポジトリ設定は作成しません。
 
 ## 4. 利用者と用語
 
-**利用者**：自分が管理する Git リポジトリで CLI を起動する開発者です。
+**利用者**：自身が管理する Git リポジトリで CLI を実行する開発者です。
 
-**pathspec**：Git が解釈する相対パスまたはパスパターンです。
+**pathspec**：Git が解釈する相対パスまたはパターンの指定です。
 
-**対象変更**：pathspec、Git status、未追跡ファイルの安全判定、機密判定と利用者確認を適用した後に採用されたファイル単位の変更です。tracked file は既存の staged / unstaged の境界を対象選択には使用せず、HEAD から working tree の最終状態までの変更全体を対象とします。除外されたファイルは対象変更に含めず、file ID も付与しません。
+**対象変更**：pathspec、Git status、未追跡ファイルの安全判定、機密判定、およびユーザー確認を適用した後に採用されたファイル単位の変更です。追跡対象ファイル（tracked file）については、既存の staged / unstaged の境界を対象選択の基準とせず、HEAD からワーキングツリーの最終状態までの変更全体を対象とします。除外されたファイルは対象変更に含まれず、file ID も付与されません。
 
-**構造 evidence**：Git diff と構文木から機械的に観測した事実です。path、status、hunk、構文 node kind、宣言名、enclosing declaration、import / export、call expression、HTML tag / attribute、CSS selector / property などを含み得ますが、変更目的、機能上の関連、`test_for`、`should_group` などの意味的分類や grouping 推奨を含みません。
+**構造エビデンス（structural evidence）**：Git diff および構文木から機械的に観測された客観的な事実です。ファイルパス、ステータス、hunk、構文ノードの種別（node kind）、宣言名、囲んでいる宣言（enclosing declaration）、import / export、関数・メソッド呼び出し（call expression）、HTML タグ／属性、CSS セレクタ／プロパティなどを含み得ますが、変更目的、機能上の関連、`test_for`、`should_group` などの意味的な分類やグルーピングの推奨は含みません。
 
-**コミット計画**：対象変更を複数の commit に割り当て、各 commit のメッセージを定めた JSON です。
+**コミット計画**：対象変更を複数のコミットに割り当て、各コミットのメッセージを定義した JSON データです。
 
-**明確な機密ファイル**：`.env`、`.env.*`、`*.pem`、`*.key`、既知の SSH 秘密鍵名、credentials や secret を明示する既知 path など、誤検知より漏えい防止を優先して常に自動除外する path です。v1 では設定や CLI による override を提供せず、commiter の分析、file ID 付与、commit 対象へ含めません。
+**明確な機密ファイル**：`.env`、`.env.*`、`*.pem`、`*.key`、既知の SSH 秘密鍵ファイル名、認証情報やシークレットを明示する既知のパスなど、誤検知のリスクよりも漏えい防止を最優先して常に自動除外するパスです。v1 では設定や CLI によるオーバーライド手段を提供せず、commiter による解析、file ID の付与、およびコミット対象のいずれにも含めません。
 
-**機密候補**：名前や配置から機密を含む可能性があるものの、通常の設定ファイルである可能性も残る path です。内容を読む前に利用者確認を必要とし、承認された場合だけローカル分析と commit 対象へ含めます。承認後も raw diff や raw value を terminal または JSON 出力へ表示しません。
+**機密候補**：名前や配置から機密情報を含む可能性があるものの、通常の設定ファイルである可能性も否定できないパスです。内容を読み取る前にユーザーへの確認を必須とし、承認された場合にのみローカル解析およびコミット対象に含めます。承認後であっても、生の差分（raw diff）や平文の値（raw value）をターミナルや JSON 出力に表示することはありません。
 
-**opaque file**：binary、大容量その他の理由で内容を LLM 入力へ渡さない対象ファイルです。内容に基づく意味判定ができないため、当該 file に限って path、status、size、type その他の metadata を grouping の補助根拠として使用できます。
+**opaque file（不透明ファイル）**：バイナリ、大容量、その他の理由により、内容を LLM への入力として渡さない対象ファイルです。内容に基づく意味的な判定が行えないため、当該ファイルに限り、パス、ステータス、サイズ、ファイル種別などのメタデータをグルーピングの補助的な判断材料として使用できます。
 
-**change_hash**：LLM が分析した変更と commit 直前の変更の同一性を検証するため、対象変更の正規化レコードから計算する SHA-256 です。status、old/new path、old/new mode、HEAD 側 object identity、および working tree 最終状態の identity を含みます。
+**change_hash**：LLM が解析した変更内容とコミット直前の変更内容の同一性を検証するために、対象変更の正規化レコードから算出する SHA-256 ハッシュ値です。ステータス、変更前後のパス（old/new path）、変更前後のファイルモード（old/new mode）、HEAD 側の Git オブジェクト識別子、およびワーキングツリー最終状態の識別子を含みます。
 
-**canonical repo path**：repository root の絶対 path について symlink を解決した実体 path です。verification trust の scope key と repo 内 cwd 判定に使用します。
+**canonical repo path（正規リポジトリパス）**：リポジトリルートの絶対パスについてシンボリックリンクを解決した実体パスです。検証 trust のスコープキーや、リポジトリ内カレントワーキングディレクトリ（cwd）の判定に使用します。
 
-**verification definition**：commiter が実際に起動する検証処理の意味を表す正規化対象です。source type、実行順の command 一覧、および各 command の name、repo root 相対の正規化済み cwd、完全な argv を含みます。`package.json` 自動検出では、これに manifest path、script name、script body の完全な文字列を加え、package manager が暗黙実行する pre/post script を無効化できない場合はその name と body も加えます。
+**verification definition（検証定義）**：commiter が実際に起動する検証処理の内容を表現する正規化データです。定義元種別（source type）、実行順序を保持したコマンド一覧、各コマンド名、リポジトリルート相対に正規化した cwd、および完全な argv（引数リスト）を含みます。`package.json` の自動検出による場合は、これに加えてマニフェストパス、スクリプト名、スクリプト本文の完全な文字列を含め、さらにパッケージマネージャが暗黙的に実行する pre/post スクリプトを無効化できない場合は、それらのスクリプト名と本文も含めます。
 
-**検証 trust**：特定の canonical repo path に対して、verification definition の SHA-256 を利用者が承認済みとして保存した状態です。trust は検証コマンド定義の承認であり、検証から間接的に実行される source、dependency、lockfile その他のコード内容の安全性を保証するものではありません。
+**検証 trust（verification trust）**：特定の canonical repo path に対して、利用者が verification definition の SHA-256 ハッシュ値を承認済みとして保存した状態です。trust は検証コマンド定義自体の承認を意味し、検証プロセスから間接的に実行されるソースコード、依存パッケージ、ロックファイル等のコード内容そのものの安全性を保証するものではありません。
 
 ## 5. 前提と制約
 
-v1 の対象 OS は macOS 14 以降、対象アーキテクチャは Apple Silicon、基準機は M3 と 16GB メモリです。
+v1 の対象 OS は macOS 14 以降、対象アーキテクチャは Apple Silicon とし、動作基準環境は M3 チップおよび 16GB メモリのマシンとします。
 
-実行時の外部依存は system Git と Ollama だけにします。syntax-aware structural analysis には公式 `github.com/tree-sitter/go-tree-sitter` と対象言語 grammar を使用し、Tree-sitter の C 実装を CGo 経由で単一 CLI バイナリへ組み込みます。Tree-sitter 用途以外へ CGo の利用範囲を拡大せず、外部 parser executable、runtime shared grammar、Oniguruma、クラウド LLM fallback を要求しません。
+実行時の外部依存関係は、システムにインストールされた Git（system Git）および Ollama のみとします。構文認識構造解析には、公式の `github.com/tree-sitter/go-tree-sitter` と対象言語の文法定義（grammar）を使用し、Tree-sitter の C 実装を CGo 経由で単一 CLI バイナリに組み込みます。Tree-sitter の用途以外に CGo の利用範囲を広げることはせず、外部パーサー実行ファイル、実行時の共有文法ライブラリ（runtime shared grammar）、Oniguruma、およびクラウド LLM へのフォールバックを要求しません。
 
-既定モデルは `qwen3.5:4b-q4_K_M` とし、モデルサイズは公式配布情報を参照して約 3.4GB と扱います。[Qwen3.5 モデル情報](https://ollama.com/library/qwen3.5%3A4b-q4_K_M/blobs/81fb60c7daa8)
+デフォルトモデルは `qwen3.5:4b-q4_K_M` とし、モデルサイズは公式配布情報に基づき約 3.4GB として扱います。[Qwen3.5 モデル情報](https://ollama.com/library/qwen3.5%3A4b-q4_K_M/blobs/81fb60c7daa8)
 
 ## 6. 通常フロー
 
-1. CLI は Git リポジトリの状態、HEAD、branch、index lock、merge、rebase、cherry-pick、revert、conflict、detached HEAD を確認します。
-2. CLI は NUL 区切りの Git status から path 一覧と staged / unstaged の状態を取得します。stage 状態は診断と保護のための metadata とし、対象選択の境界には使用しません。
-3. CLI は pathspec を適用し、ignored を除外し、tracked file は HEAD から working tree の最終状態までをファイル単位で対象化します。partial stage を含む staged / unstaged 混在ファイルもファイル全体を対象とします。rename は old path と new path を持つ一つの変更として扱い、一つの file ID を付与します。symlink はリンク先へ追従せず Git が追跡するリンク情報として対象化し、submodule は親 repo の pointer 更新だけを対象化します。
-4. CLI は path だけで機密判定を行い、明確な機密ファイルを常に自動除外します。明確な機密ファイルを対象化する override は提供しません。機密候補は内容を読む前に確認し、承認された候補だけをローカル分析へ渡します。
-5. CLI は機密判定後の対象変更について、Git metadata と Tree-sitter による構造 evidence を生成します。v1 の構文解析対象は Go、JavaScript、JSX、TypeScript、TSX、Python、Rust、HTML、CSS とし、未対応言語または構文解析に失敗した text file は raw diff と Git metadata へ fallback します。opaque file は内容を渡さず metadata だけを計画生成へ渡します。機械側は source / test、docs / source、同一 feature などの意味的関係や grouping 推奨を生成しません。
-6. CLI は各対象変更へ file ID と change_hash を付与し、8K、16K、32K の順で LLM 入力を作成し、超過時は階層要約を実行します。
-7. Ollama は制約された JSON のコミット計画を返します。CLI は Git mutation 前に schema、file assignment、安全条件を検証します。
-8. CLI は全計画と除外一覧を表示し、`Create these N commits? [y/r/N]` を一度だけ提示します。
-9. 利用者が承認した場合だけ、承認済み verification definition に基づく検証を作業ツリー全体へ一度実行します。
-10. verification 後、commit 開始直前に CLI は HEAD、対象変更の change_hash、index、および対象 untracked 集合を再検証します。ignored output だけの変化は許容します。tracked working tree、index、または対象 untracked 集合が変化した場合は commit と push を開始せず、verification が生成した working tree の変更は残したまま index を開始時状態へ復元し、変更 path を表示して `Re-analyze changed state? [y/N]` を提示します。利用者が `y` を選んだ場合は現在の Git 状態から手順 1 へ戻り、拒否した場合は exit 4 とします。
-11. 再検証が一致した場合だけ、CLI はファイル単位の commit を計画順に作成します。各 commit の stage 直前に、その commit へ割り当てられた未処理 file ID の current change_hash が分析時 snapshot と一致することを再確認します。Git hook は通常の Git operation の一部として原則許容し、割当済み file ID に対応する path の内容を hook が変更すること自体は許容します。commit 作成後は parent との差分に現れる file set が当該 commit の割当 file ID と正確に一致することを検証し、割当外 file の混入または割当 file の欠落があれば後続 commit と push を停止します。
-12. 全 commit 成功後、実際に解決した `<remote>/<branch>` を表示し、通常は `Push to <remote>/<branch>? [y/N]` を提示します。通常の Git push semantics に従い、今回の実行前から存在した outgoing commit も push 対象に含まれ得ます。
-13. push 成功後、区間別 metrics と作成した commit hash を表示します。
+1. CLI は、Git リポジトリの状態（HEAD、ブランチ、インデックスロック、ならびにマージ、リベース、チェリーピック、リバート、コンフリクト、detached HEAD などの進行中操作）を確認します。
+2. CLI は NUL 区切りの `git status` 出力からパス一覧と staged / unstaged の状態を取得します。ステージング状態は診断と保護のためのメタデータとして扱い、対象ファイル選択の境界基準としては使用しません。
+3. CLI は pathspec を適用して無視対象（ignored）ファイルを除外し、追跡対象ファイルについては HEAD からワーキングツリーの最終状態までの変更全体をファイル単位で対象とします。部分的にステージングされている（partial stage）ファイルなど、staged と unstaged の変更が混在しているファイルもファイル全体を対象とします。名前変更（rename）は変更前パスと変更後パスを持つ1つの変更として扱い、1つの file ID を付与します。シンボリックリンクはリンク先を追従せず Git が追跡するリンク情報自体を対象とし、サブモジュールは親リポジトリ側のポインタ更新のみを対象とします。
+4. CLI はファイルパスのみに基づいて機密判定を行い、明確な機密ファイルを常に自動除外します。明確な機密ファイルを対象に含めるオーバーライド手段は提供しません。機密候補についてはファイル内容を読み取る前にユーザーに確認を求め、承認された候補のみをローカル解析に渡します。
+5. CLI は機密判定を経た対象変更について、Git のメタデータおよび Tree-sitter による構造エビデンスを生成します。v1 における構文解析の対象言語は Go、JavaScript、JSX、TypeScript、TSX、Python、Rust、HTML、CSS とし、未対応言語や構文解析に失敗したテキストファイルについては、生の差分（raw diff）と Git メタデータへフォールバックして処理を継続します。opaque file は内容を渡さず、メタデータのみを計画生成に渡します。機械処理側では、実装とテスト、ドキュメントとソースコード、同一機能といった意味的な関係性やグルーピングの推奨は一切生成しません。
+6. CLI は各対象変更に file ID と change_hash を付与し、8K、16K、32K の順でコンテキストサイズに応じた LLM 入力を構築します。許容上限を超過する場合は階層的な要約処理を実行します。
+7. Ollama は制約付き JSON スキーマに従ったコミット計画を返却します。CLI は Git の状態変更（mutation）を行う前に、スキーマ、ファイルの割り当て、および安全条件を検証します。
+8. CLI はコミット計画全体と除外ファイル一覧を表示し、`Create these N commits? [y/r/N]` の確認プロンプトを一度だけ提示します。
+9. ユーザーが承認した場合にのみ、承認済みの検証定義（verification definition）に基づく検証コマンドを作業ツリー全体に対して一度だけ実行します。
+10. 検証の完了後、かつコミット処理の開始直前に、CLI は HEAD、対象変更の change_hash、インデックス、および対象の未追跡ファイル集合を再検証します。無視対象（ignored）ファイルの生成・変更のみは許容されます。追跡対象のワーキングツリー、インデックス、または対象の未追跡ファイル集合に変更が生じていた場合、CLI はコミットやプッシュを開始しません。検証処理によって生成されたワーキングツリーの変更はそのまま残し、インデックスを実行開始時の状態へ復元した上で、変更されたパスを表示して `Re-analyze changed state? [y/N]` を提示します。ユーザーが `y` を選択した場合は現在の Git 状態から手順 1 に戻り、拒否した場合は終了コード 4 で終了します。
+11. 再検証で不一致がなかった場合にのみ、CLI は計画された順序に従ってファイル単位のコミットを作成します。各コミットのステージング直前に、そのコミットに割り当てられた未処理 file ID の現在の change_hash が、解析時のスナップショットと一致することを再確認します。Git フックは通常の Git 操作の一環として原則許容し、割り当てられた file ID に対応するパスの内容をフックが変更すること自体は許容します。コミット作成後、親コミットとの差分に現れるファイル集合が、そのコミットに割り当てられた file ID と完全に一致することを検証します。割り当て外のファイルが混入していたり、割り当てられたファイルが欠落していたりした場合は、後続のコミットおよびプッシュを中断します。
+12. すべてのコミットが正常に完了した後、実際に解決された `<remote>/<branch>` を表示し、通常は `Push to <remote>/<branch>? [y/N]` を提示します。通常の Git push セマンティクスに従うため、今回の実行前からローカルに存在していた未プッシュのコミット（outgoing commit）もプッシュ対象に含まれることがあります。
+13. プッシュの成功後、フェーズごとのメトリクスと作成されたコミットハッシュを表示します。
 
 ## 7. 公開 CLI
 
-通常実行の形式は次のとおりです。
+通常実行のコマンド形式は次のとおりです。
 
 ```text
 commiter [flags] [--] [pathspec...]
 ```
 
-引数なしでは stage 状態にかかわらず、tracked file の HEAD から working tree までの全変更と、安全判定済み未追跡ファイルを対象にします。
+引数を指定しない場合、ステージング状態にかかわらず、追跡対象ファイルの HEAD からワーキングツリーまでのすべての変更と、安全判定を通過した未追跡ファイルを処理対象とします。
 
-pathspec を指定した場合は Git pathspec で対象を限定します。
+pathspec を指定した場合は、Git の pathspec セマンティクスに従って対象を絞り込みます。
 
-サブコマンドは `setup [--update-model]`、`doctor`、`config init --global|--repo`、`config show [--effective]`、`config path --global|--repo`、`trust list`、`trust revoke <repo>`、`version` とします。
+サブコマンドは `setup [--update-model]`、`doctor`、`config init --global|--repo`、`config show [--effective]`、`config path --global|--repo`、`trust list`、`trust revoke <repo>`、`version` です。
 
-一時上書きフラグは `--dry-run`、`--no-push`、`--no-confirm-commit`、`--no-confirm-push`、`--language en|ja`、`--model`、`--record-metrics`、`--json` とします。
+一時的な上書きフラグは `--dry-run`、`--no-push`、`--no-confirm-commit`、`--no-confirm-push`、`--language en|ja`、`--model`、`--record-metrics`、`--json` です。
 
-明確な機密ファイルを対象化する override flag は提供しません。
+明確な機密ファイルを対象に含めるためのオーバーライドフラグは提供しません。
 
-`--json` は `--dry-run` と読み取り専用サブコマンドに限定し、commit または push を伴う実行との併用を拒否します。
+`--json` は `--dry-run` および読み取り専用サブコマンドでのみ使用可能とし、コミットまたはプッシュを伴う実行との併用は拒否します。
 
-`--dry-run` は通常対象の差分、除外、計画、検証予定、push 先を表示しますが、index、commit、remote を変更しません。機密候補は承認済みであっても raw diff や raw value を terminal または JSON 出力へ表示せず、path、status その他の非機密 metadata だけを表示します。
+`--dry-run` は通常実行時の対象差分、除外ファイル、コミット計画、実行予定の検証、およびプッシュ先を表示しますが、インデックス、コミット、リモートの状態は変更しません。機密候補については、承認済みであっても生の差分（raw diff）や平文の値（raw value）をターミナルや JSON 出力に表示せず、パス、ステータス、その他の非機密メタデータのみを表示します。
 
 ## 8. 設定と状態
 
-設定の優先順位は `CLI > repo 設定 > global 設定 > 内蔵既定値` とします。
+設定の優先順位は `CLI > リポジトリ設定（repo 設定） > グローバル設定（global 設定） > 内蔵デフォルト値` とします。
 
-global 設定は `$XDG_CONFIG_HOME/commiter/config.toml` に置き、環境変数が未設定の場合は `~/.config/commiter/config.toml` を使用します。
+グローバル設定は `$XDG_CONFIG_HOME/commiter/config.toml` に配置し、環境変数が未設定の場合は `~/.config/commiter/config.toml` を使用します。
 
-repo 設定はリポジトリ直下の `.commiter.toml` とします。
+リポジトリ設定はリポジトリ直下の `.commiter.toml` とします。
 
-状態と trust は `$XDG_STATE_HOME/commiter/` に置き、環境変数が未設定の場合は `~/.local/state/commiter/` を使用します。
+状態ファイルおよび検証 trust は `$XDG_STATE_HOME/commiter/` に配置し、環境変数が未設定の場合は `~/.local/state/commiter/` を使用します。
 
-metrics の永続化は既定で無効とし、明示設定または `--record-metrics` の場合だけ state 配下の `metrics.jsonl` へ行います。
+メトリクスの永続化はデフォルトで無効とし、明示的な設定または `--record-metrics` フラグが指定された場合のみ、state ディレクトリ配下の `metrics.jsonl` に記録します。
 
-commit 確認と auto push は global 設定または明示 CLI だけで変更可能にし、機密判定への追加 pattern と Ollama endpoint は global 設定からのみ変更可能にします。対象外 staged 内容と選択状態の保護は v1 の変更不能 invariant とし、設定または CLI で無効化できません。
+コミット確認および自動プッシュ（auto push）の設定は、グローバル設定または明示的な CLI オプションでのみ変更可能とします。また、機密判定に追加するパターンおよび Ollama エンドポイントは、グローバル設定からのみ変更可能とします。対象外ファイルのステージング内容および選択状態の保護は v1 における不変条件（invariant）であり、設定や CLI から無効化することはできません。
 
-verification 全体は repo-scoped とし、verification command、autodetect、timeout は repo 設定だけで指定可能にします。global 設定から verification を指定してはなりません。
+検証（verification）に関する設定全体はリポジトリスコープ（repo-scoped）とし、検証コマンド、自動検出、タイムアウトはリポジトリ設定でのみ指定可能とします。グローバル設定から検証設定を指定してはなりません。
 
-glob、言語、モデル、分類補助設定は repo 設定で上書き可能にします。
+glob、言語、モデル、および分類補助の設定は、リポジトリ設定で上書き可能です。
 
-repo 設定から安全設定を変更する場合は無視して実行せず、設定エラーとして停止します。
+リポジトリ設定から安全設定を変更しようとした場合は、その設定を無視して処理を続行するのではなく、設定エラーとして実行を停止します。
 
 ### 8.1 設定 schema
 
-設定ファイルは TOML とし、次の v1 schema を使用します。
+設定ファイルは TOML 形式とし、以下の v1 スキーマを使用します。
 
 | key | 型 | 既定値 | 許可元 |
 | --- | --- | --- | --- |
@@ -144,226 +146,224 @@ repo 設定から安全設定を変更する場合は無視して実行せず、
 | `metrics.persist` | boolean | `false` | global、CLI |
 | `safety.additional_sensitive_patterns` | string array | `[]` | global |
 
-`verification.commands` の各要素は `name`、`argv`（string array）、`cwd`（string）を必須フィールドとします。`verification.commands` は repo 設定でのみ指定でき、1件以上の command を含まなければなりません。空配列は設定エラーとします。
+`verification.commands` の各要素には、`name`、`argv`（文字列配列）、`cwd`（文字列）の各フィールドが必須です。`verification.commands` はリポジトリ設定でのみ指定可能であり、1件以上のコマンドを含める必要があります。空配列の指定は設定エラーとなります。
 
-`verification.commands` が repo 設定で明示されている場合はその command 一覧を使用します。未指定の場合だけ `verification.autodetect` を評価し、true なら repo root の `package.json` から自動検出し、false なら `Verification: none` とします。
+リポジトリ設定に `verification.commands` が明示されている場合は、そのコマンド一覧を使用します。未指定の場合にのみ `verification.autodetect` を評価し、`true` であればリポジトリルートの `package.json` から自動検出し、`false` であれば `Verification: none` として検証を実行しません。
 
-`llm.context` の許容値は `"auto"`、`"8k"`、`"16k"`、`"32k"` とします。
+`llm.context` の許容値は `"auto"`、`"8k"`、`"16k"`、`"32k"` です。
 
-`llm.max_context_tokens` の許容値は 8192、16384、32768 のいずれかとし、`"auto"` の場合は指定された上限まで 8K、16K、32K の順に段階選択します。
+`llm.max_context_tokens` の許容値は 8192、16384、32768 のいずれかとし、`"auto"` の場合は指定された上限値まで 8K、16K、32K の順に段階的に選択します。
 
-`analysis.include` と `analysis.exclude` は doublestar の glob を使用し、repo root 相対に限定します。
+`analysis.include` および `analysis.exclude` は doublestar 形式の glob を使用し、リポジトリルートからの相対パスに限定します。
 
-配列形式の設定 override は要素追加ではなく置換とします。
+配列形式の設定項目の上書きは、既存要素への追加ではなく、完全な置き換えとして動作します。
 
-`include` と `exclude` は repo root 相対に限定します。verification command の `cwd` は symlink 解決後の実体 path を canonical repo path と比較し、repository root の外側を指す場合は設定エラーとして拒否します。
+`include` と `exclude` はリポジトリルート相対に限定されます。検証コマンドの `cwd` については、シンボリックリンク解決後の実体パスを canonical repo path と比較し、リポジトリルートの外側を指している場合は設定エラーとして拒否します。
 
-`safety.additional_sensitive_patterns` は組み込みの明確な機密 pattern を置換せず、自動除外対象へ追加する pattern としてだけ適用します。
+`safety.additional_sensitive_patterns` は、組み込みの明確な機密パターンを置き換えるものではなく、自動除外対象への追加パターンとしてのみ適用されます。
 
-`provider = "ollama"`、`think = false`、`stream = false`、`keep_alive = 0` は v1 の固定値とし、設定で緩和できないものとします。
+`provider = "ollama"`、`think = false`、`stream = false`、`keep_alive = 0` は v1 における固定値であり、設定によって変更することはできません。
 
-未知 key、未対応 `schema_version`、型不一致、または schema の許可元と異なる設定ファイルに記述された key は exit 2 とします。したがって global 設定内の `verification.*` は設定エラーとして拒否します。
+未知のキー、未対応の `schema_version`、型の不一致、またはスキーマの許可元と異なる設定ファイルに記述されたキーが存在する場合、終了コード 2 で終了します。したがって、グローバル設定内に `verification.*` が記述されていた場合は設定エラーとして拒否します。
 
 ## 9. 機能要件
 
 ### FR-001 リポジトリ状態の確認
 
-CLI は開始前に対象リポジトリの root、HEAD、branch、index lock、操作中の Git 状態を確認し、曖昧な状態では Git を変更せず停止しなければなりません。
+CLI は処理の開始前に、対象リポジトリのルート、HEAD、ブランチ、インデックスロック、および進行中の Git 操作（マージ、リベース、チェリーピック、リバート、コンフリクト、detached HEAD など）を確認し、曖昧な状態が検出された場合は Git の状態を変更することなく停止しなければなりません。
 
 ### FR-002 変更範囲の確定
 
-CLI は staged、unstaged、未追跡を別々に取得して状態を把握し、pathspec がある場合は Git pathspec を適用しなければなりません。tracked file の staged / unstaged 境界は対象選択には使用せず、対象となった tracked file は HEAD から working tree の最終状態までの変更全体を一つのファイル変更として扱わなければなりません。
+CLI は staged、unstaged、未追跡の各変更を個別に取得してリポジトリの状態を把握し、pathspec が指定されている場合は Git の pathspec を適用しなければなりません。追跡対象ファイルの staged / unstaged の境界は処理対象の選択基準としては使用せず、対象となった追跡対象ファイルについては、HEAD からワーキングツリーの最終状態までの変更全体を1つのファイル変更として扱わなければなりません。
 
-Git が rename として認識した変更は削除と追加の二つの file ID へ分割せず、old path と new path を持つ一つの変更として一つの file ID を付与しなければなりません。
+Git によって名前変更（rename）と認識された変更は、削除と追加という2つの file ID に分割せず、変更前パス（old path）と変更後パス（new path）を持つ1つの変更として扱い、単一の file ID を付与しなければなりません。
 
 ### FR-003 ファイル分類
 
-CLI は機密判定と除外処理が完了した後の各対象変更へ安定した file ID、status、old path、new path、言語、サイズ、binary 判定、change_hash を付与しなければなりません。rename 以外では old path と new path のうち非該当側を null として正規化できます。自動除外または利用者拒否されたファイルへ file ID を付与してはなりません。
+CLI は、機密判定および除外処理が完了した後の各対象変更に対して、安定した file ID、ステータス、old path、new path、言語、ファイルサイズ、バイナリ判定結果、および change_hash を付与しなければなりません。名前変更以外の変更では、old path と new path のうち該当しない側を null として正規化できます。自動除外されたファイルやユーザーによって拒否されたファイルに対して、file ID を付与してはなりません。
 
-change_hash は schema version `1`、status、old path、new path、old mode、new mode、HEAD 側の Git object identity、working tree 最終状態の kind と identity を含む canonical JSON の UTF-8 byte 列から SHA-256 で計算しなければなりません。非該当 field は null とし、object key 順序を固定します。
+change_hash は、スキーマバージョン `1`、ステータス、old path、new path、old mode、new mode、HEAD 側の Git オブジェクト識別子、ならびにワーキングツリー最終状態の種別および識別子を含む、正規化 JSON（canonical JSON）の UTF-8 バイト列から SHA-256 により算出しなければなりません。該当しないフィールドは null とし、オブジェクトのキー順序は固定します。
 
-通常ファイルと binary file の working tree identity は最終 file bytes の SHA-256、symlink はリンク先へ追従せず symlink target byte 列の SHA-256、submodule は親 repository が保持する gitlink commit OID、削除は null とします。未追跡 file の HEAD 側 object identity は null とします。
+通常ファイルおよびバイナリファイルのワーキングツリー識別子は最終ファイル内容の SHA-256、シンボリックリンクはリンク先を追従せずリンク先パス文字列（symlink target byte 列）の SHA-256、サブモジュールは親リポジトリが保持する gitlink コミット OID、削除されたファイルは null とします。未追跡ファイルの HEAD 側オブジェクト識別子は null とします。
 
 ### FR-004 未追跡ファイルの安全判定
 
-既定モードは `auto-safe` とし、通常テキストは追加差分として扱い、大容量または binary は opaque file として内容を LLM へ送らず metadata だけを計画生成へ渡さなければなりません。
+デフォルトの動作モードは `auto-safe` とし、通常のテキストファイルは追加差分として扱い、大容量ファイルまたはバイナリファイルは opaque file（不透明ファイル）として内容を LLM に送らず、メタデータのみを計画生成に渡さなければなりません。
 
-v1 では working tree 最終状態の file size が 64 KiB 以上の未追跡通常テキストを大容量と判定します。
-binary は size にかかわらず opaque file とします。
+v1 では、ワーキングツリー最終状態のファイルサイズが 64 KiB 以上の未追跡テキストファイルを大容量と判定します。
+バイナリファイルは、サイズにかかわらず opaque file とします。
 
-opaque file は内容に基づく意味判定ができないため、当該 file に限り path、status、size、type その他の metadata を grouping の補助根拠として使用することを許可します。
+opaque file は内容に基づく意味的な判定が行えないため、当該ファイルに限り、パス、ステータス、サイズ、ファイル種別などのメタデータをグルーピングの補助的な判断材料として使用することを許可します。
 
 ### FR-005 syntax-aware structural analysis
 
-CLI は機密判定後の対象 text file について diff hunk と対象ファイルの構文木を対応付け、Git から得られる事実に加えて、変更箇所を含む構文 node kind、宣言名、enclosing declaration、import / export、call expression など、構文から機械的に観測可能な構造 evidence を生成しなければなりません。
+CLI は、機密判定を経た対象テキストファイルについて、diff hunk と対象ファイルの構文木（syntax tree）を対応付け、Git から得られる事実に加えて、変更箇所を含む構文ノードの種別（node kind）、宣言名、囲んでいる宣言（enclosing declaration）、import / export、関数・メソッド呼び出し（call expression）など、構文から機械的に観測可能な構造エビデンスを生成しなければなりません。
 
-v1 の Tree-sitter 対応言語は Go、JavaScript、JSX、TypeScript、TSX、Python、Rust、HTML、CSS とします。HTML では tag と attribute、CSS では selector と declaration property を構造 evidence として扱えるものとします。
+v1 における Tree-sitter 対応言語は Go、JavaScript、JSX、TypeScript、TSX、Python、Rust、HTML、CSS とします。HTML ではタグと属性、CSS ではセレクタと宣言プロパティを構造エビデンスとして扱えるものとします。
 
-未対応言語、grammar 未対応、構文エラーその他の理由で十分な構造 evidence を取得できない text file は、当該ファイルだけ raw diff と Git metadata へ fallback して処理を継続しなければなりません。構文解析の失敗だけを理由に対象ファイルまたは実行全体を除外してはなりません。
+未対応言語、文法定義（grammar）の未対応、構文エラー、その他の理由により十分な構造エビデンスを取得できないテキストファイルについては、当該ファイルのみ生の差分（raw diff）と Git メタデータへフォールバックして処理を継続しなければなりません。構文解析の失敗のみを理由として、対象ファイルや実行全体の処理を除外してはなりません。
 
-機械側は変更目的、feature、source / test、docs / source、同一 logical change、`test_for`、`related_to`、`should_group` などの意味的関係または grouping 推奨を生成してはなりません。
+機械処理側は、変更目的、機能（feature）、実装とテスト（source / test）、ドキュメントとソースコード（docs / source）、同一の論理的変更、`test_for`、`related_to`、`should_group` などの意味的な関係性ラベルやグルーピングの推奨を生成してはなりません。
 
 ### FR-006 入力サイズ制御
 
-CLI は構造 evidence と必要な diff hunk を優先して LLM 入力を構成しなければなりません。
+CLI は、構造エビデンスと必要な diff hunk を優先して LLM への入力を構成しなければなりません。
 
-`llm.context = "auto"` の場合は、`llm.max_context_tokens` を上限として 8K、16K、32K の順に context 段階を選択します。`llm.context` が `"8k"`、`"16k"`、`"32k"` の固定値の場合は、その指定段階を上限とし、より大きい context 段階へ自動昇格してはなりません。
+`llm.context = "auto"` の場合は、`llm.max_context_tokens` を上限として 8K、16K、32K の順にコンテキスト段階を選択します。`llm.context` が `"8k"`、`"16k"`、`"32k"` の固定値である場合は、その指定された段階を上限とし、より大きなコンテキスト段階へ自動的に昇格させてはなりません。
 
-context 選択前に、最終 prompt の UTF-8 byte 数を入力 token 数の保守的上限とし、chat template 用の固定 256 token と、`max(1024, 48 × 対象 file 数)` で計算した出力予約 token 数を加算しなければなりません。
-CLI はこの合計が収まる最小の許可 context 段階を選択します。
+コンテキスト段階の選択前に、最終プロンプトの UTF-8 バイト数を入力トークン数の保守的な上限見積もりとし、チャットテンプレート用の固定 256 トークンと、`max(1024, 48 × 対象ファイル数)` で算出した出力予約トークン数を加算しなければなりません。CLI は、この合計値が収まる最小の許可コンテキスト段階を選択します。
 
-許可された context 上限を超える場合は file、hunk、chunk の順に階層要約を行い、構文解析対応ファイルでは構造 evidence を失わない形で最終計画へ渡さなければなりません。
-要約後も合計が許可された context 上限を超える場合、または対象 file ID、change_hash、構造 evidence の完全な集合を維持できない場合は、LLM を呼び出さず Git 無変更で停止しなければなりません。
+許可されたコンテキスト上限を超える場合は、ファイル単位、hunk 単位、chunk 単位の順に階層的な要約を行い、構文解析に対応しているファイルでは構造エビデンスが失われない形で最終計画生成へ渡さなければなりません。
+要約後も合計値が許可されたコンテキスト上限を超える場合、または対象 file ID、change_hash、構造エビデンスの完全な集合を維持できない場合は、LLM を呼び出すことなく、Git の状態を変更せずに停止しなければなりません。
 
 ### FR-007 階層要約
 
-階層要約は対象 file ID、old/new path、status、change_hash の完全な集合を維持し、要約後も対象ファイルの割当漏れを検出できなければなりません。
+階層要約は、対象 file ID、変更前後のパス（old/new path）、ステータス、change_hash の完全な集合を維持し、要約後であっても対象ファイルの割り当て漏れを検出できなければなりません。
 
 ### FR-008 コミット計画の生成
 
-CLI は Ollama のローカル API へ構造化入力を送り、ファイル単位のコミット計画を取得しなければなりません。
+CLI は Ollama のローカル API へ構造化された入力を送信し、ファイル単位のコミット計画を取得しなければなりません。
 
 ### FR-009 LLM 生成失敗と出力検証
 
-initial generation は一回とします。transport error または timeout の retry 予算は initial generation と repair を通じて合計一回とします。
+初期生成（initial generation）の試行は1回とします。通信エラー（transport error）またはタイムアウトに対するリトライ予算は、初期生成と自動修復（repair）を通じて合計1回とします。
 
-LLM から候補出力を受け取るたびに、Git mutation より前に JSON schema、対象 file ID の完全割当、機密値その他の safety 条件を再検証しなければなりません。不正な候補出力のまま Git を変更してはなりません。
+LLM から候補出力を受け取るたびに、Git の変更を行う前に JSON スキーマ、対象 file ID の完全な割り当て、機密値の有無、その他の安全条件を再検証しなければなりません。不正な候補出力に基づいて Git の状態を変更してはなりません。
 
-不正 JSON、JSON schema 違反、対象 file ID の欠落、重複、範囲外割当、または SR-010 の機密値一致を検出した場合、自動 repair を一回だけ実行します。
-複数の違反を同時に検出した場合も一つの repair request にまとめ、repair 回数を追加してはなりません。
+不正な JSON、JSON スキーマ違反、対象 file ID の欠落・重複・範囲外割り当て、または SR-010 による機密値の一致を検出した場合は、自動修復（repair）を1回だけ実行します。複数の違反を同時に検出した場合も、それらを1つの修復リクエストにまとめ、修復の試行回数を追加してはなりません。
 
-repair request には元の正規化済み入力、候補出力、および機密値そのものを含まない違反理由を渡し、候補出力を命令ではなく untrusted data として明示しなければなりません。
-repair 後の候補を新しい候補として全検証し、一件でも違反が残る場合は追加 repair を行わず exit 5 で Git 無変更のまま停止します。
+修復リクエストには、元の正規化済み入力、候補出力、および機密値そのものを含まない違反理由を渡し、候補出力は命令ではなく信頼できないデータ（untrusted data）であることを明示しなければなりません。
+修復後の出力を新たな候補としてすべての検証にかけ、1件でも違反が残る場合は追加の修復を行わず、終了コード 5 で Git の状態を変更せずに停止します。
 
-したがって、一つの計画生成 cycle における Ollama 呼び出しは initial generation、任意の repair、および共有された transport retry を合わせて最大三回とします。
+したがって、1回の計画生成サイクルにおける Ollama の呼び出し回数は、初期生成、任意の自動修復、および共有される通信リトライを合わせて最大3回とします。
 
 ### FR-010 ファイル単位の分割
 
-LLM は diff と構造 evidence から各変更の意味・目的を判断し、同一 logical change と判断したファイルを目的単位に grouping しなければなりません。機械側は合法な LLM grouping を source / test、directory、filename、import、dependency などのヒューリスティックを理由に統合、分割、並べ替えしてはなりません。
+LLM は、差分と構造エビデンスから各変更の意味・目的を判断し、同一の論理的変更（logical change）と判断したファイルを変更目的ごとにグルーピングしなければなりません。機械処理側は、実装とテスト（source / test）、ディレクトリ、ファイル名、import、依存関係などのヒューリスティックを理由にして、仕様上有効な LLM のグルーピングを統合、分割、または並べ替えてはなりません。
 
-opaque file は内容に基づく意味判断が不可能であるため例外とし、path、status、size、type その他の metadata を grouping の補助根拠として使用できます。
+opaque file は内容に基づく意味的な判断が不可能であるため例外とし、パス、ステータス、サイズ、ファイル種別などのメタデータをグルーピングの補助的な判断材料として使用できます。
 
-CLI は同一 file ID を複数 commit へ割り当ててはなりません。対象ファイルに staged / unstaged が混在する場合も hunk 単位には分割せず、そのファイルの変更全体を同一 commit に含めなければなりません。rename は old/new path を持つ一つの file ID として扱い、削除側と追加側へ分割してはなりません。
+CLI は、同一の file ID を複数のコミットに割り当ててはなりません。対象ファイルに staged と unstaged の変更が混在している場合であっても hunk 単位での分割は行わず、そのファイルの変更全体を同一のコミットに含めなければなりません。名前変更は変更前後のパスを持つ1つの file ID として扱い、削除側と追加側に分割してはなりません。
 
 ### FR-011 計画の確認
 
-CLI は全 commit の順序、メッセージ、割当ファイル、除外ファイルを表示し、一度の確認で承認、再生成、拒否を受け付けなければなりません。
+CLI は、全コミットの順序、コミットメッセージ、割り当てられたファイル、および除外されたファイルを表示し、1回の確認プロンプトで承認（y）、再生成（r）、拒否（N）を受け付けなければなりません。
 
-利用者が `r` を選んだ場合は短い補足指示を受けて再推論し、直接編集機能は提供してはなりません。
+ユーザーが `r` を選択した場合は、短い補足指示を受け付けて再推論を行い、直接編集機能は提供してはなりません。
 
 ### FR-012 検証の実行
 
-CLI は計画承認後、commit 前に検証コマンドを作業ツリー全体へ一度だけ実行しなければなりません。
+CLI は計画の承認後、コミット処理の実行前に、検証コマンドを作業ツリー全体に対して一度だけ実行しなければなりません。
 
-verification configuration は repo-scoped とし、`verification.commands`、`verification.autodetect`、`verification.timeout_seconds` を global 設定から指定してはなりません。
+検証設定（verification configuration）はリポジトリスコープとし、`verification.commands`、`verification.autodetect`、`verification.timeout_seconds` をグローバル設定から指定してはなりません。
 
-repo 設定に `verification.commands` が明示されている場合は、その command 一覧を使用しなければなりません。`verification.commands` は1件以上を必須とし、明示された空配列は設定エラーとして exit 2 にしなければなりません。
+リポジトリ設定に `verification.commands` が明示されている場合は、そのコマンド一覧を使用しなければなりません。`verification.commands` は1件以上の指定を必須とし、明示的に空配列が指定された場合は設定エラーとして終了コード 2 で終了しなければなりません。
 
-`verification.commands` が未指定の場合だけ effective な `verification.autodetect` を評価します。`verification.autodetect=true` の場合は自動検出を行い、false の場合は `Verification: none` として検証を実行しません。
+`verification.commands` が未指定の場合にのみ、有効な `verification.autodetect` を評価します。`verification.autodetect = true` の場合は自動検出を行い、`false` の場合は `Verification: none` として検証を実行しません。
 
-v1 の自動検出対象 manifest は repo root の `package.json` 一つだけとし、そこに実在する `lint`、`typecheck`、`test`、`build` script だけをこの順序で候補化します。package manager が repo root の情報から一意に定まらない場合は自動実行してはなりません。Go、Rust、Python の標準コマンドは自動推測しません。
+v1 における自動検出の対象マニフェストはリポジトリルートの `package.json` 1つのみとし、そこに実在する `lint`、`typecheck`、`test`、`build` スクリプトのみをこの順序で実行候補とします。パッケージマネージャがリポジトリルートの情報から一意に定まらない場合は、自動実行してはなりません。Go、Rust、Python の標準コマンドは自動推測しません。
 
-repo 設定の検証コマンドは shell string ではなく argv 配列で指定しなければなりません。verification command は Git-visible state を継続的に変更しないものを設定しなければなりません。
+リポジトリ設定に記述する検証コマンドは、シェル文字列ではなく argv 配列で指定しなければなりません。検証コマンドには、Git が認識できる状態（Git-visible state）を持続的に変更しないものを設定しなければなりません。
 
-CLI は verification 前後で Git-visible state を比較し、ignored output だけの生成または変更は許容します。tracked working tree、index、または対象 untracked 集合の変化は verification mutation として扱わなければなりません。
+CLI は検証の実行前後で Git が認識できる状態を比較し、無視対象（ignored）ファイルの生成または変更のみを許容します。追跡対象のワーキングツリー、インデックス、または対象の未追跡ファイル集合の変化は、検証による状態変更（verification mutation）として扱わなければなりません。
 
-verification 完了後かつ commit 列の開始直前に、CLI は HEAD と全対象変更の change_hash を再計算し、分析時 snapshot と一致することを確認しなければなりません。verification mutation または snapshot 不一致を検出した場合は commit と push を開始せず、working tree の変更を残し、index を実行開始時状態へ復元し、変更 path を表示して `Re-analyze changed state? [y/N]` を提示しなければなりません。`y` の場合は現在の状態から分析をやり直し、拒否した場合は exit 4 とします。
+検証の完了後、かつ一連のコミット処理の開始直前に、CLI は HEAD とすべての対象変更の change_hash を再計算し、解析時のスナップショットと一致することを確認しなければなりません。verification mutation またはスナップショットの不一致を検出した場合は、コミットおよびプッシュを開始せず、ワーキングツリーの変更を残したままインデックスを実行開始時の状態へ復元し、変更されたパスを表示して `Re-analyze changed state? [y/N]` を提示しなければなりません。`y` が選択された場合は現在の状態から解析をやり直し、拒否された場合は終了コード 4 で終了します。
 
 ### FR-013 commit の実行
 
-CLI は計画順に明示的なファイル集合の working tree 最終状態を stage し、Git hook と署名設定を尊重して commit を作成しなければなりません。対象ファイルに開始時の partial stage が存在しても、その staged 選択は保持せず、対象ファイル全体の変更として commit に含めなければなりません。
+CLI は計画された順序に従って、明示されたファイル集合のワーキングツリー最終状態をステージングし、Git フックおよびコミット署名設定を尊重してコミットを作成しなければなりません。対象ファイルに実行開始時点の部分的なステージング（partial stage）が存在していた場合でも、そのステージング選択は保持せず、対象ファイル全体の変更としてコミットに含めなければなりません。
 
-対象外ファイルの staged 内容と選択状態の保護は v1 の変更不能 invariant とし、設定や CLI によって無効化できません。
+対象外ファイルのステージング内容および選択状態の保護は v1 における不変条件（invariant）であり、設定や CLI オプションによって無効化することはできません。
 
-各 commit の stage 直前に、当該 commit へ割り当てられた未処理 file ID の current change_hash を再計算し、分析時 snapshot と一致することを確認しなければなりません。不一致の場合は当該 commit を開始せず、後続 commit と push を停止して安全条件違反として扱わなければなりません。これにより、先行 commit の hook、IDE、外部プロセス等が後続 commit 対象を変更した場合も未分析内容を stage してはなりません。
+各コミットのステージング直前に、当該コミットに割り当てられた未処理 file ID の現在の change_hash を再計算し、解析時のスナップショットと一致することを確認しなければなりません。不一致が検出された場合は当該コミットの処理を開始せず、後続のコミットおよびプッシュを停止して安全条件違反として扱わなければなりません。これにより、先行コミットのフック、IDE、外部プロセスなどが後続コミットの対象ファイルを変更した場合であっても、未解析の内容をステージングしてはなりません。
 
-Git hook は通常の Git operation の一部として原則許容します。hook が当該 commit に割り当てられた file ID に対応する path の内容または index 上の内容を変更すること自体は、commiter 固有の invariant を破らない限り許容します。hook の変更後に元の change_hash と一致することは要求しません。
+Git フックは通常の Git 操作の一環として原則許容します。フックが当該コミットに割り当てられた file ID に対応するパスの内容、またはインデックス上の内容を変更すること自体は、commiter 固有の不変条件を破らない限り許容します。フックによる変更後に元の change_hash と一致することは要求しません。
 
-各作成 commit の parent との差分に現れる file set は、その commit に割り当てられた file ID に対応する file set と正確に一致しなければなりません。hook その他の処理によって対象外 staged 変更または別 commit に割り当てられた file が混入した場合、あるいは割当 file が commit から欠落した場合は commiter 固有の security invariant 違反とします。
+作成された各コミットについて、親コミットとの差分に現れるファイル集合は、そのコミットに割り当てられた file ID に対応するファイル集合と厳密に一致しなければなりません。フックその他の処理によって対象外のステージング変更や別コミットに割り当てられたファイルが混入した場合、あるいは割り当てられたファイルがコミットから欠落した場合は、commiter 固有のセキュリティ不変条件違反とみなします。
 
-commit 作成後にこの invariant 違反を検出した場合、作成済み commit を自動 rollback せず、違反 path を表示し、後続 commit と push を禁止して exit 7 としなければなりません。
+コミット作成後にこの不変条件違反を検出した場合、作成済みのコミットを自動的にロールバック（reset）せず、違反が生じたパスを表示し、後続のコミットおよびプッシュを禁止して終了コード 7 で終了しなければなりません。
 
 ### FR-014 push の実行
 
-CLI は全 commit 成功後に一度だけ push し、upstream を優先し、upstream がなく remote が一つで branch が安全に確定できる場合だけ `git push -u` を使用しなければなりません。
+CLI は全コミットが正常に完了した後に一度だけプッシュを実行し、upstream が設定されている場合はそれを最優先とし、upstream がなくリモートが1つだけでブランチが安全に確定できる場合にのみ `git push -u` を使用しなければなりません。
 
-push は通常の Git push semantics に従い、現在 branch から解決先 remote ref へ送信される全 outgoing commit を対象とします。今回の commiter 実行より前から存在した outgoing commit がある場合も対象から除外せず、auto push が有効ならそれらを含めて自動 push できます。commiter は既存 outgoing commit の内容を今回の差分分析または機密判定の対象として再解析しません。この挙動を push 前の表示で明示しなければなりません。
+プッシュは通常の Git push セマンティクスに従い、現在のブランチから解決先のリモート参照へ送信されるすべての未プッシュコミット（outgoing commit）を対象とします。今回の commiter 実行前から存在していた outgoing commit がある場合も対象から除外せず、自動プッシュ（auto push）が有効であればそれらを含めて自動的にプッシュできます。commiter は、既存の outgoing commit の内容を今回の差分解析や機密判定の対象として再解析することはありません。この挙動について、プッシュ前の表示で明確に示さなければなりません。
 
 ### FR-015 setup
 
-`commiter setup` は Ollama の導入、daemon 起動、既定モデル取得を個別に確認し、Homebrew 自体を自動導入してはなりません。
+`commiter setup` は、Ollama のインストール、デーモンの起動、およびデフォルトモデルの取得について個別にユーザー確認を行い、Homebrew 自体を自動的にインストールしてはなりません。
 
 ### FR-016 doctor
 
-`commiter doctor` は Git、Ollama、loopback API、既定モデル、構造化出力、thinking 無効化、設定、trust、Git identity を読み取り専用で診断しなければなりません。
+`commiter doctor` は、Git、Ollama、ループバック API、デフォルトモデル、構造化出力、thinking の無効化、設定、検証 trust、および Git のユーザー識別情報（Git identity）を読み取り専用で診断しなければなりません。
 
 ### FR-017 言語設定
 
-コミット summary は既定で英語とし、設定または `--language ja` により日本語へ切り替えられなければなりません。
+コミットサマリ（commit summary）はデフォルトで英語とし、設定または `--language ja` により日本語へ切り替え可能でなければなりません。
 
-言語処理は計画 schema を変更せず追加言語を登録できる境界を持たなければなりません。
+言語処理は、計画スキーマを変更することなく追加言語を登録できる拡張境界を持たなければなりません。
 
 ### FR-018 metrics
 
-CLI は Git 前処理、syntax analysis、model load、prompt 評価、生成、要約、検証、Git、push の時間と、model tag または digest、context 段階、file、line、byte 数、Tree-sitter 解析成功 / fallback file 数、要約回数、終了分類を表示しなければなりません。
+CLI は、Git の前処理、構文解析、モデルのロード、プロンプト評価、計画生成、要約、検証、Git 操作、プッシュの各所要時間と、モデルのタグまたはダイジェスト、コンテキスト段階、ファイル数、行数、バイト数、Tree-sitter 解析の成功／フォールバックファイル数、要約回数、および終了分類を表示しなければなりません。
 
 ### FR-019 daemon lifecycle
 
-通常実行で loopback の Ollama が停止中の場合、CLI は一時的に daemon を起動し、自身が起動した daemon だけを終了しなければなりません。
+通常実行時にループバックの Ollama が停止している場合、CLI は一時的にデーモンを起動し、自身が起動したデーモンのみを終了時に停止しなければなりません。
 
-既存の daemon は再利用し、CLI の終了時に停止してはなりません。
+既存のデーモンはそのまま再利用し、CLI の終了時に停止してはなりません。
 
-通常実行の Ollama 呼び出しは `keep_alive: 0` を指定しなければなりません。
+通常実行時の Ollama 呼び出しでは、`keep_alive: 0` を指定しなければなりません。
 
 ### FR-020 model lifecycle
 
-通常実行ではモデルの pull と更新を実行してはなりません。
+通常実行時には、モデルの pull や更新を実行してはなりません。
 
-`setup --update-model` は更新内容を表示して明示確認を取得した場合だけモデルを更新しなければなりません。
+`setup --update-model` は、更新内容を表示し、明示的な確認を得た場合にのみモデルを更新しなければなりません。
 
-setup は既存の公式 Ollama App または CLI を再利用し、未導入で Homebrew が存在する場合だけ導入確認、daemon 起動確認、モデル取得確認を個別に提示しなければなりません。
+setup は既存の公式 Ollama アプリまたは CLI を再利用し、未インストールの状態で Homebrew が存在する場合にのみ、インストール確認、デーモン起動確認、モデル取得確認を個別に提示しなければなりません。
 
-setup は Homebrew 自体を導入してはなりません。
+setup は Homebrew 自体をインストールしてはなりません。
 
 ### FR-021 設定と状態コマンド
 
-`config init` は global または repo の初期設定ファイルを生成し、`config show` は有効値と出所を表示し、`config path` は各設定ファイルの絶対パスを表示しなければなりません。
+`config init` はグローバルまたはリポジトリの初期設定ファイルを生成し、`config show` は有効な設定値とその出所を表示し、`config path` は各設定ファイルの絶対パスを表示しなければなりません。
 
-`trust list` は保存済み trust の canonical repo path、verification definition hash、source type、argv を表示し、`trust revoke` は指定 trust を削除しなければなりません。
+`trust list` は保存されている trust の canonical repo path、verification definition hash、定義元種別（source type）、および argv を表示し、`trust revoke` は指定された trust を削除しなければなりません。
 
-設定の優先順位は CLI、repo、global、内蔵既定値の順とし、安全設定は global または明示 CLI だけで変更可能にしなければなりません。ただし verification configuration は repo-scoped のみとし、global 設定または CLI から指定できてはなりません。対象外 staged 内容と選択状態の保護、および明確な機密ファイルの常時除外は v1 の変更不能 invariant とし、どの設定元からも緩和できません。
+設定の優先順位は CLI、リポジトリ設定、グローバル設定、内蔵デフォルト値の順とし、安全設定はグローバル設定または明示的な CLI オプションでのみ変更可能にしなければなりません。ただし、検証設定（verification configuration）はリポジトリスコープに限定され、グローバル設定や CLI から指定できてはなりません。対象外ファイルのステージング内容および選択状態の保護、ならびに明確な機密ファイルの常時自動除外は v1 における不変条件であり、どの設定元からも緩和できません。
 
-repo 設定に安全設定の禁止 key が含まれる場合、CLI は設定エラーとして停止しなければなりません。
+リポジトリ設定に安全設定の禁止キーが含まれている場合、CLI は設定エラーとして停止しなければなりません。
 
-現在の verification definition hash が保存済み trust hash と一致しない場合、CLI は検証を実行する前に再承認を要求しなければなりません。
+現在の verification definition hash が保存済みの trust hash と一致しない場合、CLI は検証を実行する前に再承認を要求しなければなりません。
 
 ### FR-022 確認の既定値
 
-commit 確認と push 確認は既定で有効にし、push 自体も既定で有効にしなければなりません。
+コミット確認およびプッシュ確認はデフォルトで有効とし、プッシュ機能自体もデフォルトで有効にしなければなりません。
 
-global 設定と明示 CLI は commit 確認と push 確認を個別に省略できなければなりません。
+グローバル設定および明示的な CLI オプションにより、コミット確認とプッシュ確認を個別に省略可能でなければなりません。
 
-機密候補の読取確認と、今回の実行で機密候補として対象化した file を含む commit の push 確認は、設定や汎用の確認省略 CLI によって省略できてはなりません。明確な機密ファイルは常に自動除外し、対象化する override を提供してはなりません。
+機密候補の読み取り確認、および今回の実行で機密候補として対象に含めたファイルを含むコミットのプッシュ確認は、設定や一般的な確認省略 CLI オプションによって省略できてはなりません。明確な機密ファイルは常に自動除外とし、対象に含めるためのオーバーライド手段を提供してはなりません。
 
 ### FR-023 commit 計画の完全割当
 
-コミット数には上限を設けず、全対象 file ID をちょうど一つの commit へ割り当てなければなりません。
+コミット数に上限は設けず、すべての対象 file ID を過不足なく1つのコミットに割り当てなければなりません。
 
-欠落、重複、範囲外 file ID が一件でもある場合、CLI は Git を変更せず停止しなければなりません。
+欠落、重複、または範囲外の file ID が1件でも存在する場合、CLI は Git の状態を変更せずに停止しなければなりません。
 
 ### FR-024 機械可読出力
 
-`--json` は `--dry-run` と読み取り専用 subcommand だけで使用可能とし、commit または push を伴う通常実行との併用は usage error として exit 2 にしなければなりません。
+`--json` は `--dry-run` および読み取り専用サブコマンドでのみ使用可能とし、コミットまたはプッシュを伴う通常実行との併用はコマンド使用法エラー（usage error）として終了コード 2 で終了しなければなりません。
 
 ## 10. LLM 入力と出力
 
-Ollama endpoint は loopback に限定し、`think: false`、`stream: false`、JSON Schema、`keep_alive: 0` を使用します。commiter v1 が必要とする API 機能、既定モデル `qwen3.5:4b-q4_K_M` の動作互換性、および thinking を無効化したモデルでの structured output 修正を基準に、対応する Ollama は `0.31.2` 以上とし、下位版、`0.31.2` の prerelease、不正な version 応答は API 非互換として扱います。[Ollama Chat API](https://docs.ollama.com/api/chat)、[Structured Outputs](https://docs.ollama.com/capabilities/structured-outputs)、[Ollama v0.31.2](https://github.com/ollama/ollama/releases/tag/v0.31.2) を参照します。
+Ollama エンドポイントはループバックに限定し、`think: false`、`stream: false`、JSON Schema、`keep_alive: 0` を使用します。commiter v1 が必要とする API 機能、デフォルトモデル `qwen3.5:4b-q4_K_M` の動作互換性、および thinking を無効化したモデルにおける構造化出力（structured outputs）の修正を踏まえ、対応する Ollama のバージョンは `0.31.2` 以上とします。下位バージョン、`0.31.2` のプレリリース版、および不正なバージョン応答は API 非互換として扱います。[Ollama Chat API](https://docs.ollama.com/api/chat)、[Structured Outputs](https://docs.ollama.com/capabilities/structured-outputs)、[Ollama v0.31.2](https://github.com/ollama/ollama/releases/tag/v0.31.2) を参照してください。
 
-入力には、機械的に計算した repo 状態、対象 file ID、old/new path、status、言語、change_hash、構造 evidence、必要な raw diff hunk または階層要約を含めます。構造 evidence は構文上の観測事実に限定し、source / test、docs / source、同一 feature、同一 logical change などの意味的 relation label や grouping 推奨を含めません。
+入力には、機械的に計算したリポジトリ状態、対象 file ID、変更前後のパス（old/new path）、ステータス、言語、change_hash、構造エビデンス、ならびに必要な raw diff hunk または階層要約を含めます。構造エビデンスは構文上の客観的な観測事実に限定し、実装とテスト、ドキュメントとソースコード、同一機能、同一の論理的変更といった意味的な関係性ラベルやグルーピングの推奨は含めません。
 
-LLM は各ファイルの実際の変更内容から変更目的を判断し、その目的をファイル間で比較して grouping を決定します。通常ファイルでは path、同一 directory、類似 filename、import 関係、構文 node の近さだけを grouping の決定根拠として扱ってはなりません。opaque file に限り、内容を取得しないことによる情報不足を補うため metadata を grouping の補助根拠として使用できます。
+LLM は各ファイルの実際の変更内容から変更目的を判断し、その目的をファイル間で比較してグルーピングを決定します。通常ファイルにおいて、ファイルパス、同一ディレクトリ、類似したファイル名、import 関係、構文ノードの近さのみをグルーピングの決定根拠として扱ってはなりません。opaque file に限り、ファイル内容を取得しないことによる情報不足を補うため、メタデータをグルーピングの補助的な判断材料として使用できます。
 
-出力 schema は次の形式を必須とします。
+出力スキーマは次の JSON 形式を必須とします。
 
 ```json
 {
@@ -382,202 +382,202 @@ LLM は各ファイルの実際の変更内容から変更目的を判断し、�
 
 `type` は `feat`、`fix`、`docs`、`style`、`refactor`、`perf`、`test`、`build`、`ci`、`chore`、`revert` のいずれかとします。
 
-`scope` は必須の一行文字列とし、空文字列を許可しません。
+`scope` は必須の単一行文字列とし、空文字列は許可しません。
 
-`breaking` は boolean とし、true の場合だけ subject の scope 後ろへ `!` を付けます。
+`breaking` は boolean とし、`true` の場合のみ件名（subject）の scope の直後に `!` を付与します。
 
-`summary` は一行とし、commit body、複数行 summary、未割当 file ID、重複 file ID を許可しません。
+`summary` は単一行文字列とし、コミット本文（body）、複数行の summary、未割り当ての file ID、および重複した file ID は許可しません。
 
-commit message は通常 `type(scope): summary`、破壊的変更は `type(scope)!: summary` とします。
+コミットメッセージは、通常時は `type(scope): summary`、破壊的変更時は `type(scope)!: summary` という形式になります。
 
 ## 11. 検証 trust
 
-verification configuration は repo-scoped とし、global verification configuration は存在しません。
+検証設定（verification configuration）はリポジトリスコープとし、グローバルな検証設定は存在しません。
 
-repo 設定に `verification.commands` が明示されている場合は、その command 一覧を最優先します。`verification.commands` は1件以上を必須とし、空配列は設定エラーです。
+リポジトリ設定に `verification.commands` が明示されている場合は、そのコマンド一覧を最優先します。`verification.commands` は1件以上の指定を必須とし、空配列は設定エラーとなります。
 
-`verification.commands` が未指定の場合だけ `verification.autodetect` を評価します。`verification.autodetect=true` の場合は repo root の `package.json` に実在する `lint`、`typecheck`、`test`、`build` script をこの順序で安全に自動検出します。false の場合は検証なしとします。package manager が repo root の情報から一意に定まらない場合は自動実行しません。
+`verification.commands` が未指定の場合にのみ `verification.autodetect` を評価します。`verification.autodetect = true` の場合は、リポジトリルートの `package.json` に実在する `lint`、`typecheck`、`test`、`build` スクリプトをこの順序で安全に自動検出します。`false` の場合は検証なしとします。パッケージマネージャがリポジトリルートの情報から一意に定まらない場合は、自動実行を行いません。
 
-Go、Rust、Python の標準コマンドは自動推測せず、repo 設定の argv 配列で明示します。
+Go、Rust、Python の標準コマンドは自動推測を行わず、リポジトリ設定の argv 配列で明示的に指定します。
 
-canonical repo path は repository root の絶対 path に対して symlink を解決した実体 path とします。verification command の cwd も実行前に symlink を解決し、その実体 path が canonical repo path 配下に存在する場合だけ許可します。repository 外を指す cwd、解決不能な cwd は設定エラーとして拒否します。
+canonical repo path は、リポジトリルートの絶対パスに対してシンボリックリンクを解決した実体パスとします。検証コマンドの cwd についても実行前にシンボリックリンクを解決し、その実体パスが canonical repo path 配下に存在する場合にのみ実行を許可します。リポジトリ外部を指す cwd や、解決不可能な cwd は設定エラーとして拒否します。
 
-CLI は検証実行前に現在の verification definition を決定し、その正規化表現の SHA-256 を trust hash として計算しなければなりません。verification definition は次を含みます。
+CLI は検証の実行前に現在の検証定義（verification definition）を決定し、その正規化表現の SHA-256 を trust hash として計算しなければなりません。verification definition には以下が含まれます。
 
-- schema version `1`
-- source type（`repo_config` または `package_json_autodetect`）
-- 実行順を保持した command 一覧
-- 各 command の `name`
-- repo root 相対へ正規化した `cwd`
-- 引数境界と順序を保持した完全な `argv`
-- `package_json_autodetect` の場合だけ、manifest path、script name、script body の完全な文字列
-- `package_json_autodetect` で package manager が暗黙実行する pre/post script を無効化できない場合だけ、実行順を保持した各 script の name と body の完全な文字列
+- スキーマバージョン `1`
+- 定義元種別（source type：`repo_config` または `package_json_autodetect`）
+- 実行順序を保持したコマンド一覧
+- 各コマンドの `name`
+- リポジトリルート相対へ正規化した `cwd`
+- 引数の境界と順序を保持した完全な `argv`
+- `package_json_autodetect` の場合のみ：マニフェストパス、スクリプト名、スクリプト本文の完全な文字列
+- `package_json_autodetect` でパッケージマネージャが暗黙的に実行する pre/post スクリプトを無効化できない場合のみ：実行順序を保持した各スクリプトの名前と本文の完全な文字列
 
-正規化表現は UTF-8 の canonical JSON とし、object key 順序を固定し、不要な空白を含めず、command と argv の配列順序を保持します。trust hash はこの byte 列の SHA-256 とします。canonical repo path は hash へ含めず、trust record の scope key として別に保存します。
+正規化表現は UTF-8 の正規化 JSON（canonical JSON）とし、オブジェクトのキー順序を固定し、不要な空白を含めず、コマンドおよび argv の配列順序を保持します。trust hash はこのバイト列の SHA-256 とします。canonical repo path はハッシュに含めず、trust レコードのスコープキーとして個別に保存します。
 
-repo 設定由来では `.commiter.toml` 全体を hash してはならず、verification definition に採用された command 定義だけを hash 対象とします。`package.json` 自動検出では manifest 全体を hash してはならず、採用した script の manifest path、script name、script body、および実際に暗黙実行される pre/post script の name と body だけを hash 対象とします。
+リポジトリ設定に由来する場合、`.commiter.toml` 全体をハッシュ化してはならず、verification definition に採用されたコマンド定義のみをハッシュ対象とします。`package.json` の自動検出に由来する場合、マニフェスト全体をハッシュ化してはならず、採用されたスクリプトのマニフェストパス、スクリプト名、スクリプト本文、および実際に暗黙実行される pre/post スクリプトの名前と本文のみをハッシュ対象とします。
 
-source file、Git HEAD、lockfile、dependency content、verification と無関係で暗黙実行もされない manifest script、model、commit、analysis その他の設定は trust hash に含めてはなりません。
-ただし package manager の解決結果などが変わって最終 argv または暗黙実行される pre/post script が変化した場合は、verification definition の変化として trust hash が変化しなければなりません。
+ソースコードファイル、Git HEAD、ロックファイル、依存パッケージの内容、検証とは無関係で暗黙実行もされないマニフェストスクリプト、モデル、コミット、解析などのその他の設定は、trust hash に含めてはなりません。
+ただし、パッケージマネージャの解決結果などが変化したことで最終的な argv や暗黙実行される pre/post スクリプトが変化した場合は、verification definition の変化として trust hash が変化しなければなりません。
 
-初回実行、trust record 不在、または現在の verification definition hash が保存済み hash と異なる場合、CLI は source type、実行予定 command の name、argv、cwd、自動検出時の script name と script body、実際に暗黙実行される pre/post script の name と body、現在の trust hash を表示し、検証実行前に承認を求めなければなりません。
+初回実行時、trust レコードが存在しない場合、または現在の verification definition hash が保存済みハッシュと異なる場合、CLI は定義元種別、実行予定の各コマンド名、argv、cwd、自動検出時のスクリプト名と本文、実際に暗黙実行される pre/post スクリプトの名前と本文、および現在の trust hash を表示し、検証実行前にユーザーの承認を求めなければなりません。
 
-hash が一致する場合は再承認を要求せず、同じ verification definition を実行できます。検証コマンドがない場合は `Verification: none` と表示し、trust record の作成や追加確認なしで続行します。
+ハッシュが一致する場合は再承認を要求せず、同一の verification definition をそのまま実行できます。検証コマンドが存在しない場合は `Verification: none` と表示し、trust レコードの作成や追加の確認を行うことなく処理を続行します。
 
 ## 12. セキュリティと安全要件
 
 ### SR-001 ローカル送信境界
 
-commiter 自身が LLM 推論、分析、telemetry その他の補助処理のために、差分、prompt、LLM 応答その他の repository content を loopback 外へ送信してはなりません。
+commiter 自身が LLM 推論、差分解析、テレメトリ、その他の補助処理のために、差分、プロンプト、LLM 応答、その他リポジトリの内容をループバック（loopback）の外部へ送信してはなりません。
 
-ただし、利用者が許可した Git push、および利用者が承認した verification command、Git hook、署名処理等の子プロセスによる通信は本制約の対象外とします。
+ただし、ユーザーが許可した Git プッシュ、およびユーザーが承認した検証コマンド、Git フック、署名処理などの子プロセスによって発生する通信は、本制約の対象外とします。
 
 ### SR-002 機密ファイルの事前判定
 
-CLI は内容を読む前に path だけで機密判定を行わなければなりません。明確な機密ファイルは質問せず常に自動除外し、除外理由を表示しなければなりません。v1 では設定または CLI による override を提供せず、分析、file ID 付与、commit 対象へ含めてはなりません。
+CLI はファイル内容を読み取る前に、ファイルパスのみに基づいて機密判定を行わなければなりません。明確な機密ファイルはユーザーへの確認を行うことなく常に自動除外とし、除外理由を表示しなければなりません。v1 では設定や CLI によるオーバーライド手段を提供せず、解析、file ID の付与、コミット対象のいずれにも含めてはなりません。
 
-機密候補は内容を読む前に path と検出理由を表示し、一括承認を求めなければなりません。
+機密候補については内容を読み取る前にパスと検出理由を表示し、一括での承認確認を求めなければなりません。
 
-path 判定は Unicode を保持した repo root 相対の正規化 path に対して component 単位で行い、ASCII の大文字小文字を区別しません。
-各 directory component と、extension を除いた basename を `.`, `-`, `_` で分割した token が `auth`、`credential`、`credentials`、`secret`、`secrets`、`token`、`tokens`、`password`、`passwd` のいずれかに完全一致する path は機密候補とします。
-部分文字列だけの一致により `authentication.go` や `tokenizer.go` を候補にしてはなりません。
+パス判定は、Unicode を保持したリポジトリルート相対の正規化パスに対してコンポーネント単位で行い、ASCII の大文字と小文字は区別しません。
+各ディレクトリコンポーネント、および拡張子を除いたファイル名（basename）を `.`, `-`, `_` で分割した各トークンが、`auth`、`credential`、`credentials`、`secret`、`secrets`、`token`、`tokens`、`password`、`passwd` のいずれかに完全一致するパスを機密候補と判定します。
+部分文字列の一致のみに基づいて、`authentication.go` や `tokenizer.go` などを機密候補と判定してはなりません。
 
-`.npmrc`、`.pypirc`、`.netrc`、`.docker/config.json`、および basename が `kubeconfig` の path は機密候補とします。
-ただし、明確な機密ファイルの組み込み pattern または `safety.additional_sensitive_patterns` に一致する場合は候補ではなく常に自動除外します。
+`.npmrc`、`.pypirc`、`.netrc`、`.docker/config.json`、および basename が `kubeconfig` のパスは機密候補とします。
+ただし、明確な機密ファイルの組み込みパターンまたは `safety.additional_sensitive_patterns` に一致する場合は、候補確認を行わず常に自動除外とします。
 
 ### SR-003 機密候補の拒否
 
-利用者が拒否した機密候補は内容を読まずに除外し、除外一覧を計画画面へ表示して残りの対象だけを続行しなければなりません。自動除外または拒否されたファイルは対象変更と file ID 集合から除外しなければなりません。
+ユーザーが拒否した機密候補は内容を読み取ることなく除外し、除外一覧を計画確認画面に表示した上で、残りの対象ファイルのみで処理を続行しなければなりません。自動除外または拒否されたファイルは、対象変更および file ID の集合から完全に除外しなければなりません。
 
 ### SR-004 対象化された機密候補の保護
 
-機密候補として承認されたファイルの内容は、commiter プロセス内の構造解析と loopback のローカル LLM にだけ渡し、terminal、JSON 出力、metrics、debug log、永続ファイルへ raw value、prompt、raw diff を出力または保存してはなりません。
+機密候補として承認されたファイルの内容は、commiter プロセス内の構文解析およびループバックのローカル LLM にのみ渡し、ターミナル、JSON 出力、メトリクス、デバッグログ、永続化ファイルへ平文の値（raw value）、プロンプト、生の差分（raw diff）を出力または保存してはなりません。
 
-`--dry-run` でも承認済み機密候補の raw diff を表示せず、path、status その他の非機密 metadata だけを表示しなければなりません。
+`--dry-run` においても、承認済みの機密候補の raw diff は表示せず、パス、ステータス、その他の非機密メタデータのみを表示しなければなりません。
 
 ### SR-005 機密候補 push の再確認
 
-今回の実行で機密候補として承認・対象化された file を含む commit の push は auto push 設定に関係なく、push 直前に手動確認を要求しなければなりません。
+今回の実行で機密候補として承認・対象化されたファイルを含むコミットのプッシュについては、自動プッシュ（auto push）設定の有無にかかわらず、プッシュの直前に手動での確認を求めなければなりません。
 
-実行前から存在する outgoing commit は FR-014 のとおり今回の差分分析や機密判定で再解析しないため、本要件の判定対象外とします。
+実行前から存在していた outgoing commit は、FR-014 に規定のとおり今回の差分解析や機密判定で再解析を行わないため、本要件の判定対象外とします。
 
 ### SR-006 stage 保護、復元、verification mutation
 
-対象外ファイルの staged 内容と選択状態は、成功、失敗、拒否、再生成、割込みのすべてで開始時の状態を保持または復元しなければなりません。この保護は v1 の変更不能 invariant とし、設定または CLI で無効化してはなりません。
+対象外ファイルのステージング内容および選択状態は、処理の成功、失敗、ユーザー拒否、再生成、中断のいずれの場合であっても、実行開始時の状態を完全に保持または復元しなければなりません。この保護は v1 における変更不能な不変条件（invariant）であり、設定や CLI オプションで無効化してはなりません。
 
-対象ファイルの staged / unstaged 境界は対象選択として保持せず、commit 成功時はファイル全体の変更へ吸収されたものとします。commit 開始前に失敗、中止、拒否、再生成、割込みが発生した場合は、対象ファイルを含む index を開始時の状態へ復元しなければなりません。
+対象ファイルの staged / unstaged の境界は対象選択としては保持せず、コミットが成功した時点でファイル全体の変更としてコミットに吸収されます。コミットの開始前に失敗、中止、拒否、再生成、中断が発生した場合は、対象ファイルを含むインデックスを実行開始時の状態へ復元しなければなりません。
 
-verification が tracked working tree、index、または対象 untracked 集合を変更した場合、CLI は working tree の変更を自動 rollback してはなりません。index を開始時状態へ復元し、変更 path を表示して再分析を提示しなければなりません。ignored output だけの変化は許容します。
+検証処理が追跡対象のワーキングツリー、インデックス、または対象の未追跡ファイル集合を変更した場合（verification mutation）、CLI はワーキングツリーの変更を自動的にロールバックしてはなりません。インデックスを実行開始時の状態へ復元し、変更されたパスを表示した上で、再解析を行うかどうかの確認を提示しなければなりません。無視対象（ignored）ファイルの生成・変更のみは許容されます。
 
-各 commit の stage 直前には当該 commit の割当 file ID の change_hash を再検証し、分析後に後続対象が変更されていた場合は未分析内容を commit してはなりません。
+各コミットのステージング直前には、当該コミットに割り当てられた file ID の change_hash を再検証し、解析完了後に後続の対象ファイルが変更されていた場合は、未解析の内容をコミットしてはなりません。
 
-Git hook は通常の Git operation として許容し、当該 commit の割当 file ID に対応する path 内の変更だけを理由に停止してはなりません。ただし作成 commit の file set に割当外 file が混入する、または割当 file が欠落する場合は commiter 固有の security invariant 違反として後続 commit と push を停止しなければなりません。作成済み commit は自動 rollback してはなりません。
+Git フックは通常の Git 操作の一環として許容し、当該コミットに割り当てられた file ID に対応するパス内の変更のみを理由として停止してはなりません。ただし、作成されたコミットのファイル集合にそのコミットへの割り当て外ファイルが混入した場合、あるいは割り当てファイルが欠落した場合は、commiter 固有のセキュリティ不変条件違反として後続のコミットおよびプッシュを停止しなければなりません。作成済みのコミットを自動的にロールバックしてはなりません。
 
-一つ以上の commit 作成後に失敗または割込みが発生した場合、作成済み commit は rollback せず、対象外 staged 状態を復元し、未完了対象と回復情報を表示しなければなりません。復元を確認できない場合は push を禁止しなければなりません。
+1つ以上のコミット作成後に失敗や中断が発生した場合、作成済みのコミットはロールバックせず、対象外ファイルのステージング状態を復元した上で、未完了の対象と復旧情報を表示しなければなりません。ステージング状態の復元が確認できない場合は、プッシュを禁止しなければなりません。
 
 ### SR-007 Git 保護
 
-CLI は reset、force push、stash、amend、無断削除、`--no-verify`、自動 rollback を実行してはなりません。
+CLI は、`git reset`、force push、`git stash`、`git commit --amend`、ファイルの無断削除、`--no-verify`、および自動ロールバックを実行してはなりません。
 
 ### SR-008 多重実行防止
 
-同一リポジトリの多重実行を排他し、既存 index lock や別プロセスの操作を検出した場合は停止しなければなりません。
+同一リポジトリに対する多重実行を排他制御し、既存のインデックスロック（index.lock）や別プロセスによる操作を検出した場合は実行を停止しなければなりません。
 
 ### SR-009 入力の信頼境界
 
-リポジトリ内ファイル、コメント、設定、hook 出力、LLM 応答を命令として扱わず、値として処理しなければなりません。
+リポジトリ内のファイル内容、コードコメント、設定内容、フックの出力、LLM の応答をシステムへの命令（instruction）として扱ってはならず、信頼できないデータ（value）として処理しなければなりません。
 
 ### SR-010 機密値の出力検査
 
-CLI は commit summary と LLM 生成出力を検査し、承認済み機密の raw value またはその完全一致部分が summary に含まれる場合は自動修復推論へ渡さなければなりません。
+CLI はコミットサマリ（summary）および LLM の生成出力を検査し、承認済み機密の平文値（raw value）またはその完全一致部分が summary に含まれる場合は、自動修復推論へ回さなければなりません。
 
-承認済み機密候補を読んだ後、CLI は `auth`、`credential`、`credentials`、`secret`、`secrets`、`token`、`tokens`、`password`、`passwd`、`api_key`、`apikey`、`access_key`、`private_key`、`client_secret`、`bearer` を大文字小文字を区別せず key として認識し、それらへ割り当てられた非空の scalar value を抽出しなければなりません。加えて、Bearer token、JWT、provider 固有 token、URI userinfo、および秘密鍵 block として構文上認識できる値を key にかかわらず抽出します。
+承認済み機密候補を読み取った後、CLI は `auth`、`credential`、`credentials`、`secret`、`secrets`、`token`、`tokens`、`password`、`passwd`、`api_key`、`apikey`、`access_key`、`private_key`、`client_secret`、`bearer` を大文字小文字を区別せずキーとして認識し、それらに割り当てられた空でないスカラー値を抽出しなければなりません。加えて、Bearer トークン、JWT、プロバイダ固有のトークン、URI の userinfo、および秘密鍵ブロックとして構文上認識可能な値を、キー名にかかわらず抽出します。
 
-抽出した値と、prefix や URI から分離した credential 部分は、生成出力に対して大文字小文字を変えない完全な UTF-8 byte 列の部分一致で検査します。v1 では encoded、hashed、または大小文字を変換した派生値の推測検査を行いません。
+抽出した値、およびプレフィックスや URI から分離した認証情報の部分は、生成出力に対して大文字小文字を変更しない完全な UTF-8 バイト列の部分一致で検査します。v1 では、エンコード、ハッシュ化、または大文字小文字を変換した派生値の推測検査は行いません。
 
-抽出値は現在の process memory 内だけで保持し、terminal、JSON 出力、metrics、debug log、永続ファイル、または機密値を除去していない repair 理由へ含めてはなりません。
+抽出した値は現在のプロセス内メモリにのみ保持し、ターミナル、JSON 出力、メトリクス、デバッグログ、永続化ファイル、または機密値を除去していない修復理由に含めてはなりません。
 
-機密値一致は FR-009 の一回だけの自動 repair へ渡し、自動 repair 後も機密値が残る場合、または repair 後の候補が他の検証に違反する場合、CLI は追加 repair を行わず exit 5 で Git を変更せず停止しなければなりません。
+機密値の一致が検出された場合は FR-009 に定める1回限りの自動修復へ回し、自動修復後も機密値が残る場合、または修復後の候補が他の検証に違反する場合は、追加の修復を行わず終了コード 5 で Git の状態を変更せずに停止しなければなりません。
 
 ### SR-011 terminal-safe 出力
 
-repository path、Git metadata、LLM 出力、verification output、Git hook output その他の untrusted text を terminal へ表示する場合、ANSI escape sequence、control character、改行その他の terminal 制御として解釈され得る byte sequence を安全に encoding または escaping しなければなりません。untrusted text によって表示内容や terminal state を偽装・変更できてはなりません。
+リポジトリパス、Git メタデータ、LLM 出力、検証出力、Git フック出力などの信頼できないテキスト（untrusted text）をターミナルに表示する場合、ANSI エスケープシーケンス、制御文字、改行など、ターミナル制御として解釈され得るバイト列を安全にエンコードまたはエスケープしなければなりません。信頼できないテキストによって表示内容やターミナルの状態を偽装・改変できてはなりません。
 
 ## 13. 非機能要件
 
 ### NFR-001 再現性
 
-同じ Git 状態、設定 hash、model digest、入力、および同一 build に固定された Tree-sitter / grammar version に対して、機械的な対象集合、構造 evidence、schema 検証結果を再現できなければなりません。
+同一の Git 状態、設定ハッシュ、モデルダイジェスト、入力、および同一ビルドに固定された Tree-sitter / grammar バージョンに対して、機械的に抽出される対象集合、構造エビデンス、およびスキーマ検証結果を正確に再現できなければなりません。
 
 ### NFR-002 メモリ管理
 
-既定の `keep_alive: 0` により推論終了後にモデルをアンロードし、モデル常駐を前提にしてはなりません。
+デフォルトの `keep_alive: 0` 設定により、推論終了後にモデルをアンロードし、モデルがメモリに常駐することを前提としてはなりません。
 
 ### NFR-003 大規模差分
 
-入力が 32K を超えても、階層要約を用いて対象 file の完全な集合を保持したまま計画生成を継続しなければなりません。
+入力サイズが 32K トークン相当を超える場合であっても、階層要約を用いて対象ファイルの完全な集合を保持したまま計画生成を継続しなければなりません。
 
 ### NFR-004 操作可視性
 
-commit、push、検証、stage の各状態、実行予定、失敗箇所、回復情報を利用者が端末で識別できなければなりません。
+コミット、プッシュ、検証、ステージングの各状態、実行予定、失敗箇所、および復旧情報を、利用者がターミナル上で明確に把握できなければなりません。
 
 ### NFR-005 外部依存の最小化
 
-言語、binary、vendor 判定には Apache-2.0 の `github.com/go-enry/go-enry/v2` を採用し、拡張子の自前表より精度と保守性を優先します。
+言語、バイナリ、vendor の判定には Apache-2.0 ライセンスの `github.com/go-enry/go-enry/v2` を採用し、ファイル拡張子の自前マッピングテーブルよりも精度と保守性を優先します。
 
-go-enry の生成データによる binary 容量への影響を許容し、Oniguruma は使用しません。[go-enry](https://github.com/go-enry/go-enry)
+go-enry が内包するデータによるバイナリサイズへの影響は許容し、Oniguruma は使用しません。[go-enry](https://github.com/go-enry/go-enry)
 
-syntax-aware structural analysis には公式 `github.com/tree-sitter/go-tree-sitter` と公式 grammar の Go bindings を採用します。Tree-sitter core と grammar の C code は CGo で build 時に単一 CLI バイナリへ組み込み、実行時に外部 parser executable や shared grammar library を要求しません。CGo の利用はこの構文解析境界に限定します。[go-tree-sitter](https://github.com/tree-sitter/go-tree-sitter)
+構文認識構造解析には、公式の `github.com/tree-sitter/go-tree-sitter` および公式 grammar の Go バインディングを採用します。Tree-sitter コアおよび grammar の C コードは CGo によりビルド時に単一 CLI バイナリへ組み込み、実行時に外部のパーサー実行ファイルや共有文法ライブラリを要求しません。CGo の利用はこの構文解析境界に限定します。[go-tree-sitter](https://github.com/tree-sitter/go-tree-sitter)
 
-`**` を含む glob には MIT の `github.com/bmatcuk/doublestar/v4` を採用し、`**` を扱えない標準 `path.Match` は代替にしません。
+`**` を含む glob パターン処理には MIT ライセンスの `github.com/bmatcuk/doublestar/v4` を採用し、`**` を扱えない Go 標準ライブラリの `path.Match` は代替として使用しません。
 
-doublestar の探索範囲は repo root 内に制限します。[doublestar](https://github.com/bmatcuk/doublestar)
+doublestar の探索範囲はリポジトリルート内に制限します。[doublestar](https://github.com/bmatcuk/doublestar)
 
-TOML には MIT の `github.com/pelletier/go-toml/v2` を採用し、自前 parser より保守性を優先します。
+TOML の解析には MIT ライセンスの `github.com/pelletier/go-toml/v2` を採用し、自前パーサーよりも保守性を優先します。
 
-TOML 入力サイズに上限を設け、未知 key は設定エラーにします。[go-toml](https://github.com/pelletier/go-toml)
+TOML の入力サイズに上限を設け、未知のキーは設定エラーとします。[go-toml](https://github.com/pelletier/go-toml)
 
-JSON、HTTP、subprocess は Go 標準ライブラリを使用します。
+JSON、HTTP、サブプロセス実行には Go 標準ライブラリを使用します。
 
-差分 hunk と構文 node range の対応付け、構造 evidence の正規化、LLM 入力への圧縮は Go 側で実装します。Tree-sitter は syntax-aware structural analysis に限定して使用し、型解決、cross-file symbol resolution、call graph、control-flow graph、data-flow analysis などの semantic static analysis へ拡張しません。
+diff hunk と構文ノード範囲の対応付け、構造エビデンスの正規化、および LLM 入力への圧縮は Go 側で実装します。Tree-sitter は構文認識構造解析に限定して使用し、型解決、ファイル横断的なシンボル解決、コールグラフ、制御フローグラフ、データフロー解析などの意味的な静的解析には拡張しません。
 
 ### NFR-006 ローカル記録
 
-metrics の永続記録は既定で無効とし、明示時だけ state 配下の `metrics.jsonl` へ行います。
+メトリクスの永続的な記録はデフォルトで無効とし、明示的な指定があった場合のみ state ディレクトリ配下の `metrics.jsonl` に追記します。
 
-metrics には path、message、diff、prompt、user feedback、機密値を記録してはなりません。
+メトリクスには、パス名、コミットメッセージ、diff、プロンプト、ユーザーフィードバック、機密値を記録してはなりません。
 
 ### NFR-007 性能計測
 
-v1 では数値性能ゲートを設けず、M3 と 16GB の環境で区間別実測値を収集して次版の基準策定に利用します。
+v1 では数値による性能ゲート（合否基準）を設けず、M3 チップおよび 16GB メモリの環境において区間別の実測値を収集し、次期バージョンの基準策定に利用します。
 
 ## 14. 障害時の動作
 
-LLM が利用できない、model 未導入、API 互換性診断失敗、許容された retry 後も transport error または timeout が解消しない、最終候補が schema / assignment / safety 検証を通過しない、検証失敗、commit 開始前の stage 復元失敗の場合は commit と push を開始しません。
+LLM が利用できない、モデルが未取得、API 互換性診断に失敗した、許容されたリトライ後も通信エラーやタイムアウトが解消しない、最終候補がスキーマ／割り当て／安全性検証を通過しない、検証コマンドが失敗した、あるいはコミット開始前のステージング復元に失敗した場合は、コミットおよびプッシュを開始しません。
 
-個別ファイルの Tree-sitter grammar 未対応、構文エラー、または構造 evidence 抽出失敗は致命エラーとせず、当該ファイルだけ raw diff と Git metadata へ fallback します。
+個別ファイルにおける Tree-sitter 文法定義の未対応、構文エラー、または構造エビデンスの抽出失敗は致命的なエラーとはせず、当該ファイルのみ生の差分（raw diff）と Git メタデータへフォールバックして処理を継続します。
 
-verification 後の再検証で tracked working tree、index、対象 untracked 集合、HEAD、または対象 change_hash の変化を検出した場合は、verification が生成した working tree の変更を残し、index を開始時状態へ復元します。変更 path を terminal-safe に表示し、`Re-analyze changed state? [y/N]` を提示します。`y` なら現在の状態から対象選択と分析をやり直し、拒否した場合は exit 4 とします。verification command は Git-visible state を継続的に変更しないものを設定する必要があり、再分析後も同じ verification mutation が発生する場合は利用者が verification definition を修正できるよう原因 command を表示します。
+検証完了後の再検証において、追跡対象のワーキングツリー、インデックス、対象の未追跡ファイル集合、HEAD、または対象の change_hash に変化が検出された場合は、検証によって生成されたワーキングツリーの変更を残し、インデックスを実行開始時の状態へ復元します。変更されたパスを terminal-safe に表示した上で、`Re-analyze changed state? [y/N]` を提示します。`y` を選択した場合は現在の状態から対象選択および解析をやり直し、拒否した場合は終了コード 4 で終了します。検証コマンドには Git が認識できる状態を持続的に変更しないものを設定する必要があり、再解析後も同一の検証による状態変更（verification mutation）が発生する場合は、利用者が検証定義を修正できるよう原因となったコマンドを表示します。
 
-ignored file だけの生成または変更は verification mutation とみなさず処理を継続できます。
+無視対象（ignored）ファイルの生成または変更のみであれば、verification mutation とはみなさず処理を継続できます。
 
-各 commit の stage 直前の change_hash 再検証で不一致を検出した場合は、その commit を開始せず、既に作成済みの commit は保持したまま後続 commit と push を停止し、変更された path と未完了計画を報告します。
+各コミットのステージング直前における change_hash の再検証で不一致を検出した場合は、そのコミットを開始せず、既に作成済みのコミットは保持したまま後続のコミットとプッシュを停止し、変更されたパスと未完了の計画を報告します。
 
-Git hook その他の通常 Git operation により作成済み commit の file set が割当 file ID と一致しない場合は、作成済み commit を reset せず、違反 path、未完了計画、push 未実行を報告して exit 7 とします。
+Git フックその他の通常の Git 操作によって、作成されたコミットのファイル集合が割り当てられた file ID と一致しなくなった場合は、作成済みコミットを reset せず、違反パス、未完了の計画、およびプッシュ未実行であることを報告して終了コード 7 で終了します。
 
-commit の途中でその他の失敗が発生した場合も既に作成した commit を reset せず、hash、未完了の計画、push 未実行を報告します。
+コミット処理の途中でその他の失敗が発生した場合も、既に作成されたコミットを reset せず、コミットハッシュ、未完了の計画、およびプッシュ未実行であることを報告します。
 
-push 先を解決できない場合は、利用者が commit を承認していれば local commit まで作成し、push 失敗として停止します。
+プッシュ先のリモートやブランチを解決できない場合は、利用者がコミットを承認していればローカルコミットの作成まで行い、プッシュ失敗として停止します。
 
-push 先を解決できない場合の終了コードは 8 とし、ネットワーク push が失敗した場合も作成済み local commit を残して rollback しません。
+プッシュ先を解決できない場合の終了コードは 8 とし、ネットワーク経由のプッシュが失敗した場合も、作成済みのローカルコミットを残してロールバックしません。
 
-Ctrl-C を受けた場合は、実行中処理を停止し、stage の復元結果と commit 済み hash を報告します。
+Ctrl-C（SIGINT）を受信した場合は、実行中の処理を停止し、ステージング状態の復元結果と作成済みコミットのハッシュを報告します。
 
 ## 15. 終了コード
 
 | コード | 分類 |
 | ---: | --- |
-| 0 | 成功または対象変更なし |
+| 0 | 成功、または対象変更なし |
 | 1 | 予期しない内部障害 |
 | 2 | usage または設定エラー |
 | 3 | 利用者による中止 |
@@ -592,138 +592,138 @@ Ctrl-C を受けた場合は、実行中処理を停止し、stage の復元結�
 
 ### AC-001 対象範囲
 
-staged、unstaged、未追跡を混在させた一時 Git repo で、引数なし実行が安全判定済みの対象だけを収集し、pathspec 実行が範囲を限定することを確認します。
+staged、unstaged、未追跡の変更が混在する一時的な Git リポジトリにおいて、引数なしでの実行が安全判定済みの対象ファイルのみを収集し、pathspec を指定した実行がその範囲に対象を限定することを確認します。
 
 ### AC-002 stage の扱い
 
-partial stage と path 外 staged 変更を用意し、対象ファイルでは staged / unstaged の両方がファイル全体の変更として同一 commit に含まれることを確認します。対象外ファイルの staged 内容と選択状態は成功時にも維持され、この保護を設定または CLI から無効化できないことを確認します。
+部分的なステージング（partial stage）や pathspec 対象外のステージング変更を用意し、対象ファイルについては staged と unstaged の両方がファイル全体の変更として同一コミットに含まれることを確認します。対象外ファイルのステージング内容および選択状態が成功時にも保持され、この保護を設定や CLI から無効化できないことを確認します。
 
-各作成 commit の parent との差分が、その commit に割り当てられた file ID の変更だけを含み、対象外 staged file や別 commit の file ID が混入しないことを確認します。
+各コミットについて親コミットとの差分を調べ、そのコミットに割り当てられた file ID の変更のみが含まれ、対象外のステージングファイルや別コミットの file ID が混入しないことを確認します。
 
-commit 開始前の検証失敗、利用者中止、Ctrl-C では対象ファイルを含む index が開始時の状態へ復元されることを確認します。commit 作成後の失敗または Ctrl-C では作成済み commit を rollback せず、対象外 staged 状態が復元されることを確認します。
+コミット開始前の検証失敗、利用者による中止、Ctrl-C による中断において、対象ファイルを含むインデックスが開始時の状態へ復元されることを確認します。コミット作成後の失敗または Ctrl-C において、作成済みコミットがロールバックされず、対象外ファイルのステージング状態が復元されることを確認します。
 
 ### AC-003 パス種別
 
-rename、delete、binary、symlink、submodule pointer、Unicode path、空白と改行を含む path を用意し、対象外への再帰と誤った内容読み取りがないことを確認します。
+名前変更（rename）、削除、バイナリ、シンボリックリンク、サブモジュールのポインタ更新、Unicode パス、空白や改行を含むパスを用意し、対象外への再帰的探索や誤った内容読み取りが発生しないことを確認します。
 
-rename が old path と new path を持つ一つの file ID として表現され、削除と追加の二つの file ID へ分割されないことを確認します。通常 file、未追跡、削除、rename、binary、symlink、submodule pointer について change_hash が定義どおり計算され、内容、path、mode、object identity の対象要素が変化した場合に change_hash が変化することを確認します。
+名前変更が old path と new path を持つ1つの file ID として表現され、削除と追加の2つの file ID に分割されないことを確認します。通常ファイル、未追跡ファイル、削除、名前変更、バイナリ、シンボリックリンク、サブモジュールのポインタ更新について change_hash が仕様どおりに算出され、内容、パス、モード、オブジェクト識別子の対象要素が変化した場合に change_hash も変化することを確認します。
 
 ### AC-004 機密確認
 
-明確な機密ファイルが質問なしで常に自動除外され、file ID を付与されず、CLI または設定による override が存在しないことを確認します。
+明確な機密ファイルが確認なしで常に自動除外され、file ID が付与されず、CLI や設定によるオーバーライドが存在しないことを確認します。
 
-Unicode path、ASCII 大文字小文字、directory component、`.`、`-`、`_` で分割される basename token、`.npmrc`、`.pypirc`、`.netrc`、`.docker/config.json`、basename `kubeconfig` の fixture を用意し、SR-002 の完全一致規則に従って機密候補が判定されることを確認します。`authentication.go` や `tokenizer.go` の部分文字列一致だけでは候補にならず、組み込みの明確な機密 pattern または `safety.additional_sensitive_patterns` に一致する path は候補確認より自動除外が優先されることを確認します。
+Unicode パス、ASCII 大文字小文字、ディレクトリコンポーネント、`.`、`-`、`_` で分割される basename のトークン、`.npmrc`、`.pypirc`、`.netrc`、`.docker/config.json`、basename `kubeconfig` のテストケース（fixture）を用意し、SR-002 の完全一致ルールに従って機密候補が判定されることを確認します。`authentication.go` や `tokenizer.go` のような部分文字列一致のみでは候補にならず、組み込みの明確な機密パターンまたは `safety.additional_sensitive_patterns` に一致するパスについては候補確認よりも自動除外が優先されることを確認します。
 
-機密候補は読取前に確認され、承認時は local LLM へだけ内容を渡し、拒否時は内容を読まずに除外して file ID を付与しないことを確認します。承認済み候補についても raw value と raw diff が通常表示、`--dry-run`、`--json`、metrics、debug log、永続ファイルに現れないことを確認します。
+機密候補は内容の読み取り前に確認され、承認時はローカル LLM にのみ内容が渡され、拒否時は内容を読み取ることなく除外されて file ID が付与されないことを確認します。承認済みの候補についても、平文の値（raw value）や生の差分（raw diff）が通常表示、`--dry-run`、`--json`、メトリクス、デバッグログ、永続化ファイルに出力されないことを確認します。
 
 ### AC-005 大規模差分
 
-8K、16K、32K の各段階に収まる fixture と上限を超える fixture を用意し、最終 prompt の UTF-8 byte 数、chat template 用 256 token、`max(1024, 48 × 対象 file 数)` の出力予約 token に基づいて、許可された最小 context 段階が選択されることを確認します。
+8K、16K、32K の各コンテキスト段階に収まるケースと上限を超えるケースを用意し、最終プロンプトの UTF-8 バイト数、チャットテンプレート用の 256 トークン、および `max(1024, 48 × 対象ファイル数)` の出力予約トークンに基づいて、許可された最小のコンテキスト段階が選択されることを確認します。
 
-`llm.context = "auto"` では `llm.max_context_tokens` の範囲内で 8K、16K、32K の順に段階選択され、固定 context では指定段階を超えて自動昇格しないことを確認します。上限超過時は file、hunk、chunk の順に階層要約され、要約後も上限を超える場合、または完全な file ID、change_hash、構造 evidence 集合を維持できない場合は、LLM を呼び出さず Git 無変更で停止することを確認します。
+`llm.context = "auto"` の場合は `llm.max_context_tokens` の範囲内で 8K、16K、32K の順に段階選択され、固定コンテキスト設定では指定された段階を超えて自動昇格しないことを確認します。上限超過時はファイル単位、hunk 単位、chunk 単位の順に階層要約が行われ、要約後も上限を超える場合、あるいは完全な file ID、change_hash、構造エビデンスの集合を維持できない場合は、LLM を呼び出すことなく Git を変更せずに停止することを確認します。
 
 ### AC-006 構造解析と計画分割
 
-Go、JavaScript、JSX、TypeScript、TSX、Python、Rust、HTML、CSS の fixture で、変更 hunk に対応する構文 node、宣言、import / export、HTML tag / attribute、CSS selector / property などの構造 evidence が取得されることを確認します。構造 evidence に source / test、同一 feature、`should_group` などの意味的 relation label が含まれないことを確認します。
+Go、JavaScript、JSX、TypeScript、TSX、Python、Rust、HTML、CSS のケースで、変更 hunk に対応する構文ノード、宣言、import / export、HTML タグ／属性、CSS セレクタ／プロパティなどの構造エビデンスが取得されることを確認します。構造エビデンスに source / test、同一 feature、`should_group` などの意味的な関係性ラベルが含まれないことを確認します。
 
-未対応言語または意図的に構文解析を失敗させた text file が raw diff と Git metadata へ fallback し、実行全体が継続することを確認します。
+未対応言語または意図的に構文解析を失敗させたテキストファイルが、生の差分（raw diff）と Git メタデータへフォールバックし、実行全体が継続することを確認します。
 
-source、test、docs、依存変更、機械的変更を含む差分で、LLM が意味・目的に基づいて grouping し、機械側が合法な grouping を書き換えないこと、file ID の欠落、重複、範囲外割当が検出され、同一ファイルの hunk 分割が行われないことを確認します。opaque file についてだけ metadata を grouping の補助根拠として使用できることを確認します。
+実装コード、テスト、ドキュメント、依存関係の変更、機械的変更を含む差分において、LLM が意味・目的に基づいてグルーピングを行い、機械処理側が仕様上有効なグルーピングを書き換えないこと、file ID の欠落・重複・範囲外割り当てが検出されること、ならびに同一ファイルの hunk 分割が行われないことを確認します。opaque file についてのみ、メタデータをグルーピングの補助的な判断材料として使用できることを確認します。
 
 ### AC-007 LLM retry と出力検証
 
-transport error と timeout を返す Ollama fixture を用意し、transport retry の予算が initial generation と repair を通じて合計一回だけ共有されることを確認します。一つの計画生成 cycle における Ollama 呼び出しが、initial generation、任意の repair、共有 transport retry を合わせて最大三回に制限されることを確認します。
+通信エラー（transport error）とタイムアウトを返す Ollama のテストケースを用意し、通信リトライの予算が初期生成と修復を通じて合計1回のみ共有されることを確認します。1回の計画生成サイクルにおける Ollama 呼び出しが、初期生成、任意の自動修復、および共有通信リトライを合わせて最大3回に制限されることを確認します。
 
-不正 JSON、schema 違反、欠落・重複・範囲外 file ID、SR-010 の機密値一致を返す fixture では、複数違反を一つの repair request にまとめ、自動 repair が合計一回だけ実行されることを確認します。repair request に機密値そのものが含まれず、元の候補出力が untrusted data として扱われることを確認します。
+不正な JSON、スキーマ違反、欠落・重複・範囲外の file ID、SR-010 の機密値一致を返すケースでは、複数の違反が1つの修復リクエストにまとめられ、自動修復が合計1回だけ実行されることを確認します。修復リクエストに機密値そのものが含まれず、元の候補出力が信頼できないデータ（untrusted data）として扱われることを確認します。
 
-repair 後の候補を全検証し、一件でも違反が残る場合は追加 repair を行わず exit 5 となり、index、commit、remote を含む Git state が変更されないことを確認します。
+修復後の候補を全体検証し、1件でも違反が残る場合は追加の修復を行わず終了コード 5 となり、インデックス、コミット、リモートを含む Git の状態が変更されないことを確認します。
 
 ### AC-008 検証 trust
 
-global 設定に `verification.autodetect`、`verification.timeout_seconds`、`verification.commands` を記述した場合は設定エラーとして exit 2 になり、verification configuration が repo-scoped に限定されることを確認します。
+グローバル設定に `verification.autodetect`、`verification.timeout_seconds`、`verification.commands` を記述した場合は設定エラーとして終了コード 2 になり、検証設定がリポジトリスコープに限定されることを確認します。
 
-repo 設定で `verification.commands` が1件以上明示された場合はその command 一覧が autodetect より優先されることを確認します。明示された空配列は設定エラーとして exit 2 になることを確認します。
+リポジトリ設定で `verification.commands` が1件以上明示された場合は、そのコマンド一覧が自動検出よりも優先されることを確認します。明示的に空配列が指定された場合は設定エラーとして終了コード 2 になることを確認します。
 
-`verification.commands` が未指定かつ `verification.autodetect=true` の場合だけ repo root の `package.json` が自動検出対象になり、未指定かつ `verification.autodetect=false` では `Verification: none` になることを確認します。repo root の情報から package manager が一意に定まらない場合は自動実行されないことを確認します。
+`verification.commands` が未指定かつ `verification.autodetect = true` の場合にのみリポジトリルートの `package.json` が自動検出の対象となり、未指定かつ `verification.autodetect = false` では `Verification: none` になることを確認します。リポジトリルートの情報からパッケージマネージャが一意に定まらない場合は、自動実行されないことを確認します。
 
-初回または trust record 不在では承認が要求され、同一 verification definition の再実行では再承認されないことを確認します。
+初回の実行時または trust レコードが存在しない場合はユーザーの承認が要求され、同一の verification definition の再実行では再承認が要求されないことを確認します。
 
-repo 設定由来では command の name、cwd、argv、command 順序の変更で trust hash が変化し、verification と無関係な `.commiter.toml` の設定変更では変化しないことを確認します。
+リポジトリ設定に由来する場合、コマンドの name、cwd、argv、コマンド順序の変更によって trust hash が変化し、検証と無関係な `.commiter.toml` の設定変更では変化しないことを確認します。
 
-`package.json` 自動検出では採用 script の script name または script body、manifest path、最終 argv、command 順序、実際に暗黙実行される pre/post script の name または body の変更で trust hash が変化し、暗黙実行されない未採用 script やその他の manifest field、lockfile、source file、Git HEAD、dependency content の変更だけでは変化しないことを確認します。
-pre/post script が存在しても採用対象の `lint`、`typecheck`、`test`、`build` 自体が自動検出から消えないことを確認します。
+`package.json` の自動検出に由来する場合、採用スクリプトの名前または本文、マニフェストパス、最終的な argv、コマンド順序、実際に暗黙実行される pre/post スクリプトの名前または本文の変更によって trust hash が変化し、暗黙実行されない未採用スクリプトやその他のマニフェストフィールド、ロックファイル、ソースファイル、Git HEAD、依存パッケージ内容の変更のみでは変化しないことを確認します。
+pre/post スクリプトが存在する場合でも、採用対象の `lint`、`typecheck`、`test`、`build` 自体が自動検出から消えないことを確認します。
 
-repository root を symlink 経由と実体 path 経由の双方から起動し、同じ canonical repo path の trust scope として扱われることを確認します。verification cwd が symlink 解決後に repo root 外を指す場合は設定エラーになることを確認します。
+リポジトリルートをシンボリックリンク経由と実体パス経由の双方から起動し、同一の canonical repo path の trust スコープとして扱われることを確認します。検証の cwd がシンボリックリンク解決後にリポジトリルート外を指す場合は設定エラーになることを確認します。
 
-hash 変化時は source type、argv、cwd、自動検出時の script name と script body、実際に暗黙実行される pre/post script の name と body、現在の trust hash を表示して再承認を要求し、検証なしの場合は `Verification: none` と表示して trust を作成しないことを確認します。
+ハッシュの変化時は定義元種別、argv、cwd、自動検出時のスクリプト名と本文、実際に暗黙実行される pre/post スクリプトの名前と本文、および現在の trust hash を表示して再承認を要求し、検証なしの場合は `Verification: none` と表示して trust を作成しないことを確認します。
 
 ### AC-009 commit と hook
 
-複数 commit の計画、成功 hook、失敗 hook、署名設定を用意し、計画順、commit message 形式、未完了時の push 禁止を確認します。
+複数コミットの計画、成功するフック、失敗するフック、コミット署名設定を用意し、計画された順序、コミットメッセージの形式、未完了時におけるプッシュ禁止を確認します。
 
-先行 commit の hook または外部プロセスが後続 commit に割り当てられた file を変更する fixture を用意し、次の commit の stage 直前 change_hash 検証で不一致を検出して当該 commit を開始しないことを確認します。
+先行コミットのフックまたは外部プロセスが後続コミットに割り当てられたファイルを変更するケースを用意し、次のコミットのステージング直前における change_hash 検証で不一致を検出して当該コミットを開始しないことを確認します。
 
-pre-commit hook が現在の commit に割り当てられた file の内容だけを formatter 等で変更する場合は通常の Git operation として許容され、元の change_hash との一致を要求しないことを確認します。
+pre-commit フックが現在のコミットに割り当てられたファイルの内容のみをフォーマッタ等で変更する場合は、通常の Git 操作として許容され、元の change_hash との一致を要求しないことを確認します。
 
-hook が対象外 staged file または別 commit の file を現在の commit へ混入させる場合、および割当 file を commit から欠落させる場合は、作成 commit の file set 検証で security invariant 違反を検出し、作成済み commitを rollbackせず、後続 commit と push を停止して exit 7 になることを確認します。
+フックが対象外のステージングファイルや別コミットのファイルを現在のコミットへ混入させる場合、および割り当てられたファイルをコミットから欠落させる場合は、作成コミットのファイル集合検証においてセキュリティ不変条件違反を検出し、作成済みコミットをロールバックせず、後続のコミットとプッシュを停止して終了コード 7 になることを確認します。
 
 ### AC-010 push 解決
 
-upstream あり、remote 一つで upstream なし、複数 remote、branch 不明の各状態で、upstream 優先、条件付き `git push -u`、解決不能時の停止を確認します。
+upstream あり、リモートが1つで upstream なし、複数リモート、ブランチ不明の各状態において、upstream 優先、条件付き `git push -u`、および解決不能時における停止を確認します。
 
-実行前から remote tracking ref より ahead の local commit を用意し、その後 commiter が新しい commit を作成した場合、通常の Git push semantics に従って既存 outgoing commit と今回作成 commit の両方が push 対象になること、auto push 有効時にも既存 outgoing commit を除外しないこと、既存 outgoing commit は今回の差分分析や機密判定で再解析されないことが push 前に明示されることを確認します。
+実行前からリモート追跡ブランチより進んでいる（ahead）ローカルコミットが存在し、その後 commiter が新しいコミットを作成した場合、通常の Git push セマンティクスに従って既存の outgoing commit と今回作成したコミットの双方がプッシュ対象になること、自動プッシュが有効な場合でも既存の outgoing commit を除外しないこと、および既存の outgoing commit は今回の差分解析や機密判定で再解析されないことがプッシュ前に明示されることを確認します。
 
 ### AC-011 setup と doctor
 
-Ollama 未導入、daemon 停止、model 未取得、model 取得済みの各状態で、setup の個別確認と doctor の非破壊診断を確認します。
+Ollama 未インストール、デーモン停止、モデル未取得、モデル取得済みの各状態において、setup による個別の確認と doctor による非破壊的な診断を確認します。
 
 ### AC-012 設定優先順位
 
-global、repo、CLI に異なる値を設定し、CLI、repo、global、既定値の順に適用され、repo から安全設定を変更できないことを確認します。
+グローバル、リポジトリ、CLI に異なる値を設定し、CLI、リポジトリ、グローバル、デフォルト値の順に優先適用され、リポジトリ設定から安全設定を変更できないことを確認します。
 
-設定 schema の全 key について型、既定値、許可元、配列置換、repo root 外の `cwd` と glob の拒否を確認し、未知 key、未対応 schema version、型不一致、許可元外の key が exit 2 になることを確認します。global 設定の `verification.*` が拒否されること、`analysis.preserve_outside_staged` が schema に存在せず対象外 staged 保護を設定から無効化できないことを確認します。
+設定スキーマの全キーについて型、デフォルト値、指定可能な設定元、配列置換、リポジトリルート外の `cwd` および glob の拒否を確認し、未知のキー、未対応のスキーマバージョン、型の不一致、許可元以外のキーが終了コード 2 になることを確認します。グローバル設定の `verification.*` が拒否されること、`analysis.preserve_outside_staged` がスキーマに存在せず対象外ステージングの保護を設定から無効化できないことを確認します。
 
 ### AC-013 言語
 
-既定設定で英語、`ja` 設定で日本語の summary が生成され、同一計画 schema が維持されることを確認します。
+デフォルト設定で英語、`ja` 設定で日本語のコミットサマリが生成され、同一のコミット計画スキーマが維持されることを確認します。
 
 ### AC-014 metrics とメモリ
 
-M3 と 16GB の環境で区間別 metrics が表示され、`keep_alive: 0` により推論終了後のモデル解放が Ollama の状態で確認できることを確認します。
+M3 チップおよび 16GB メモリの環境で区間別メトリクスが表示され、`keep_alive: 0` により推論終了後のモデル解放が Ollama の状態で確認できることを確認します。
 
 ### AC-015 daemon と model lifecycle
 
-Ollama daemon の停止中、起動済み、モデル未取得、更新可能の各状態で、既存 daemon の再利用、自身が起動した daemon だけの停止、通常実行での pull なし、setup の個別確認を確認します。
+Ollama デーモンの停止中、起動済み、モデル未取得、更新可能の各状態において、既存デーモンの再利用、自身が起動したデーモンのみの停止、通常実行での pull の非実行、setup での個別確認を確認します。
 
 ### AC-016 設定と trust コマンド
 
-`config init --global`、`config init --repo`、`config show --effective`、`config path --global`、`config path --repo`、`trust list`、`trust revoke <repo>` の出力と状態変更を確認します。`trust list` が canonical repo path、verification definition hash、source type、argv を表示し、`trust revoke <repo>` 後の次回検証で再承認されることを確認します。
+`config init --global`、`config init --repo`、`config show --effective`、`config path --global`、`config path --repo`、`trust list`、`trust revoke <repo>` の出力と状態変更を確認します。`trust list` が canonical repo path、verification definition hash、定義元種別、argv を表示し、`trust revoke <repo>` 実行後の次回検証時に再承認が求められることを確認します。
 
 ### AC-017 JSON 制約と割当
 
-不正な type、空 scope、複数行 summary、body、欠落、重複、範囲外 file ID、複数 commit への同一 file 割当を検出し、Git 無変更で停止することを確認します。
+不正な type、空の scope、複数行の summary、body の存在、file ID の欠落・重複・範囲外割り当て、複数コミットへの同一ファイルの割り当てを検出し、Git の状態を変更せずに停止することを確認します。
 
-`--json` が `--dry-run` と読み取り専用 subcommand で成功し、commit または push を伴う実行では usage error として exit 2 になることを確認します。
+`--json` が `--dry-run` および読み取り専用サブコマンドで正常に動作し、コミットまたはプッシュを伴う実行では使用法エラーとして終了コード 2 になることを確認します。
 
 ### AC-018 機密値の summary 検査
 
-承認済み機密候補に対して SR-010 の機密 key に割り当てられた非空 scalar value、Bearer token、JWT、provider 固有 token、URI userinfo、秘密鍵 block を含む fixture を用意し、抽出値と credential 部分が生成出力に対する大文字小文字を変えない完全な UTF-8 byte 列の部分一致で検査されることを確認します。encoded、hashed、または大小文字を変換した派生値は v1 の検査対象にならないことを確認します。
+承認済みの機密候補に対して、SR-010 に定める機密キーに割り当てられた空でないスカラー値、Bearer トークン、JWT、プロバイダ固有のトークン、URI の userinfo、秘密鍵ブロックを含むテストケースを用意し、抽出した値と認証情報部分が生成出力に対する大文字小文字を変更しない完全な UTF-8 バイト列の部分一致で検査されることを確認します。エンコード、ハッシュ化、または大文字小文字を変換した派生値は v1 の検査対象にならないことを確認します。
 
-機密値一致を含む生成出力では FR-009 の共有された一回だけの自動 repair が実行され、repair 後も一致または他の検証違反が残る場合は exit 5 で Git 無変更のまま停止することを確認します。抽出した raw value が terminal、`--json`、metrics、debug log、永続ファイル、機密値を除去していない repair 理由へ残らないことを確認します。
+機密値の一致を含む生成出力において、FR-009 に定める共有された1回限りの自動修復が実行され、修復後も一致または他の検証違反が残る場合は終了コード 5 で Git を変更せずに停止することを確認します。抽出した平文値（raw value）がターミナル、`--json`、メトリクス、デバッグログ、永続化ファイル、および機密値を除去していない修復理由に残らないことを確認します。
 
 ### AC-019 push 失敗の保持
 
-push 先を解決できない場合とネットワーク push が失敗した場合に、承認済み local commit を残し、rollback せず終了コード 8 を返すことを確認します。
+プッシュ先を解決できない場合、およびネットワーク経由のプッシュが失敗した場合に、承認済みのローカルコミットを残し、ロールバックせずに終了コード 8 を返すことを確認します。
 
 ### AC-020 verification mutation と再分析
 
-verification fixture が tracked working tree、index、対象 untracked file をそれぞれ変更するケースを用意し、commit が開始されず、working tree の変更が保持され、index が開始時状態へ復元され、変更 path と再分析確認が表示されることを確認します。`y` では現在の Git 状態から対象選択、change_hash 計算、LLM 分析をやり直し、拒否時は exit 4 になることを確認します。
+検証用のテストケースが追跡対象のワーキングツリー、インデックス、対象の未追跡ファイルをそれぞれ変更するケースを用意し、コミットが開始されず、ワーキングツリーの変更が保持され、インデックスが開始時の状態へ復元され、変更されたパスと再解析確認が表示されることを確認します。`y` を選択した場合は現在の Git 状態から対象選択、change_hash 算出、LLM 解析をやり直し、拒否時は終了コード 4 になることを確認します。
 
-ignored file だけを生成または変更する verification fixture では mutation とみなさず処理を継続することを確認します。verification 後かつ commit 列開始前に対象 file を外部プロセスから変更したケースでも、全対象 change_hash の再検証が不一致を検出することを確認します。
+無視対象（ignored）ファイルのみを生成または変更する検証テストケースでは、mutation とはみなさず処理を継続することを確認します。検証完了後かつコミット処理の開始前に対象ファイルが外部プロセスから変更されたケースにおいても、全対象の change_hash 再検証で不一致を検出することを確認します。
 
 ### AC-021 terminal-safe 出力
 
-ANSI escape sequence、control character、改行を含む path、LLM 出力、verification output、Git hook output の fixture を用意し、terminal 制御として解釈されず安全に encoding または escaping され、表示内容や terminal state を偽装できないことを確認します。
+ANSI エスケープシーケンス、制御文字、改行を含むパス、LLM 出力、検証出力、Git フック出力のテストケースを用意し、ターミナル制御として解釈されることなく安全にエンコードまたはエスケープされ、表示内容やターミナルの状態を偽装できないことを確認します。
 
 ## 17. 要件対応表
 
@@ -753,6 +753,6 @@ ANSI escape sequence、control character、改行を含む path、LLM 出力、v
 
 ## 18. 将来候補
 
-v1 の受入後に llama.cpp backend、追加言語、Homebrew Tap、実測に基づく性能ゲートを検討します。
+v1 の受け入れ完了後に、llama.cpp バックエンド、追加言語への対応、Homebrew Tap、実測値に基づく性能ゲート（基準値）の策定を検討します。
 
-将来候補は v1 の実行時依存、CLI、JSON 計画 schema、安全確認の既定値を変更しません。
+将来候補の検討事項は、v1 における実行時の依存関係、CLI、JSON コミット計画スキーマ、および安全確認のデフォルト値を変更しません。
