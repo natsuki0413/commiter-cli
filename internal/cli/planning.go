@@ -58,10 +58,8 @@ func generateCommitPlan(ctx context.Context, root string, snapshot gitstate.Snap
 		return planning.Plan{}, err
 	}
 	defer runtime.Close()
-	started = time.Now()
 	generated, err := (planning.Generator{Client: runtime.Client}).Generate(ctx, prepared, language, sensitive)
 	if err != nil {
-		recorder.AddDuration(runmetrics.Generation, time.Since(started))
 		return planning.Plan{}, err
 	}
 	recorder.AddDuration(runmetrics.ModelLoad, time.Duration(generated.Telemetry.LoadDuration))
