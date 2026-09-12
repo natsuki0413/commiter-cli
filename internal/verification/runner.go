@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -68,11 +69,10 @@ func Run(ctx context.Context, root string, definition *Definition, timeout time.
 		}
 		var combined bytes.Buffer
 		process := exec.CommandContext(timed, command.Argv[0], command.Argv[1:]...)
+		configureVerificationProcess(process)
 		process.Dir = filepath.Join(root, filepath.FromSlash(command.CWD))
 		process.Env = append(os.Environ(), "LC_ALL=C")
-		process.Stdout = &combined
-		process.Stderr = &combined
-		err := process.Run()
+		err := runVerificationProcess(process, &combined)
 		after, afterErr := CaptureRepositoryState(root, policy)
 		var changed []string
 		if afterErr != nil {
@@ -99,4 +99,52 @@ func Run(ctx context.Context, root string, definition *Definition, timeout time.
 		return result, failure
 	}
 	return result, nil
+}
+
+func runVerificationProcess(process *exec.Cmd, output io.Writer) error {
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		return err
+	}
+	process.Stdout = writer
+	process.Stderr = writer
+	copyDone := make(chan error, 1)
+	go func() {
+		_, copyErr := io.Copy(output, reader)
+		copyDone <- copyErr
+	}()
+
+	startErr := process.Start()
+	_ = writer.Close()
+	if startErr != nil {
+		_ = reader.Close()
+		<-copyDone
+		return startErr
+	}
+	waitErr := process.Wait()
+	cleanupErr := cleanupVerificationProcess(process)
+
+	var copyErr error
+	timer := time.NewTimer(time.Second)
+	select {
+	case copyErr = <-copyDone:
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+	case <-timer.C:
+		_ = reader.Close()
+		<-copyDone
+		copyErr = exec.ErrWaitDelay
+	}
+	_ = reader.Close()
+	if waitErr != nil {
+		return waitErr
+	}
+	if cleanupErr != nil {
+		return cleanupErr
+	}
+	return copyErr
 }
