@@ -59,18 +59,25 @@ func generateCommitPlan(ctx context.Context, root string, snapshot gitstate.Snap
 	}
 	defer runtime.Close()
 	generated, err := (planning.Generator{Client: runtime.Client}).Generate(ctx, prepared, language, sensitive)
+	recordGeneratedTelemetry(recorder, generated)
 	if err != nil {
 		return planning.Plan{}, err
 	}
-	recorder.AddDuration(runmetrics.ModelLoad, time.Duration(generated.Telemetry.LoadDuration))
-	recorder.AddDuration(runmetrics.PromptEvaluation, time.Duration(generated.Telemetry.PromptEvalDuration))
-	recorder.AddDuration(runmetrics.Generation, time.Duration(generated.Telemetry.EvalDuration))
 	model := generated.Telemetry.Model
 	if model == "" {
 		model = values.Model
 	}
 	recorder.SetContext(model, contextStage, 0)
 	return generated.Plan, nil
+}
+
+func recordGeneratedTelemetry(recorder *runmetrics.Recorder, generated planning.Result) {
+	if generated.Telemetry == (planning.Telemetry{}) {
+		return
+	}
+	recorder.AddDuration(runmetrics.ModelLoad, time.Duration(generated.Telemetry.LoadDuration))
+	recorder.AddDuration(runmetrics.PromptEvaluation, time.Duration(generated.Telemetry.PromptEvalDuration))
+	recorder.AddDuration(runmetrics.Generation, time.Duration(generated.Telemetry.EvalDuration))
 }
 
 func supplementRenderer(base contextinput.Renderer, supplement string) contextinput.Renderer {

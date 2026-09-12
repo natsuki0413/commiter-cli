@@ -142,9 +142,15 @@ approved:
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	started = time.Now()
-	runResult, runErr := verificationFlow(ctx, root, definition, time.Duration(values.Timeout)*time.Second, statePolicy)
-	recorder.AddDuration(runmetrics.Verification, time.Since(started))
+	var runResult verification.RunResult
+	var runErr error
+	if definition != nil && len(definition.Commands) > 0 {
+		started = time.Now()
+		runResult, runErr = verificationFlow(ctx, root, definition, time.Duration(values.Timeout)*time.Second, statePolicy)
+		recorder.AddDuration(runmetrics.Verification, time.Since(started))
+	} else {
+		runResult, runErr = verificationFlow(ctx, root, definition, time.Duration(values.Timeout)*time.Second, statePolicy)
+	}
 	if err := printVerificationResults(printer, runResult); err != nil {
 		if restoreErr := initialState.RestoreIndex(); restoreErr != nil {
 			return fail(printer, exitcode.New(exitcode.Commit, "verification output failed and index restoration is unknown")), false

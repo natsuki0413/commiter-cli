@@ -80,19 +80,21 @@ func TestFinishMetricsPersistsOnlyFixedSchemaAndKeepsJSONStdoutClean(t *testing.
 
 func TestMainMetricsMatchFailureBoundary(t *testing.T) {
 	tests := []struct {
-		name           string
-		failure        string
-		wantCode       int
-		wantExit       string
-		wantVerify     bool
-		wantGit        bool
-		wantPush       bool
+		name         string
+		failure      string
+		verification bool
+		wantCode     int
+		wantExit     string
+		wantVerify   bool
+		wantGit      bool
+		wantPush     bool
 	}{
 		{name: "LLM", failure: "llm", wantCode: exitcode.LLM, wantExit: "llm_error"},
-		{name: "verification", failure: "verification", wantCode: exitcode.Verification, wantExit: "verification_failed", wantVerify: true},
-		{name: "commit", failure: "commit", wantCode: exitcode.Commit, wantExit: "commit_failed", wantVerify: true, wantGit: true},
-		{name: "push", failure: "push", wantCode: exitcode.Push, wantExit: "push_failed", wantVerify: true, wantGit: true, wantPush: true},
-		{name: "SIGINT", failure: "interrupt", wantCode: exitcode.Interrupted, wantExit: "interrupted", wantVerify: true},
+		{name: "verification", failure: "verification", verification: true, wantCode: exitcode.Verification, wantExit: "verification_failed", wantVerify: true},
+		{name: "commit", failure: "commit", verification: true, wantCode: exitcode.Commit, wantExit: "commit_failed", wantVerify: true, wantGit: true},
+		{name: "push", failure: "push", verification: true, wantCode: exitcode.Push, wantExit: "push_failed", wantVerify: true, wantGit: true, wantPush: true},
+		{name: "SIGINT", failure: "interrupt", verification: true, wantCode: exitcode.Interrupted, wantExit: "interrupted", wantVerify: true},
+		{name: "no verification", wantCode: exitcode.Success, wantExit: "success", wantGit: true, wantPush: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -101,8 +103,14 @@ func TestMainMetricsMatchFailureBoundary(t *testing.T) {
 			cliGit(t, repo, "add", "a.txt")
 			cliGit(t, repo, "commit", "-m", "base")
 			cliWrite(t, repo, "a.txt", "planned\n", 0o644)
-			if test.failure == "push" {
+			if test.wantPush || test.failure == "push" {
 				cliGit(t, repo, "remote", "add", "origin", "https://example.invalid/repo.git")
+			}
+			if test.verification {
+				cliWrite(t, repo, ".commiter.toml", "schema_version = 1\n\n[[verification.commands]]\nname = \"true\"\nargv = [\"true\"]\ncwd = \".\"\n", 0o644)
+				previousInput := mainInput
+				mainInput = strings.NewReader("y\n")
+				t.Cleanup(func() { mainInput = previousInput })
 			}
 			chdir(t, repo)
 			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
@@ -160,7 +168,30 @@ func TestMainMetricsMatchFailureBoundary(t *testing.T) {
 				(record.Durations.Push != nil) != test.wantPush {
 				t.Fatalf("durations=%+v", record.Durations)
 			}
+			if !test.wantVerify && strings.Contains(stdout.String(), "verification:") {
+				t.Fatalf("unexecuted verification phase was displayed: %q", stdout.String())
+			}
 		})
+	}
+}
+
+func TestRecordGeneratedTelemetryKeepsPartialSuccessAndOmitsEmpty(t *testing.T) {
+	recorder := runmetrics.New()
+	recordGeneratedTelemetry(recorder, planning.Result{})
+	empty := recorder.Finish("llm_error")
+	if empty.Durations.ModelLoad != nil || empty.Durations.PromptEvaluation != nil || empty.Durations.Generation != nil {
+		t.Fatalf("empty telemetry was recorded: %+v", empty.Durations)
+	}
+
+	recorder = runmetrics.New()
+	recordGeneratedTelemetry(recorder, planning.Result{Telemetry: planning.Telemetry{
+		Model: "model:tag", LoadDuration: 10, PromptEvalDuration: 20, EvalDuration: 30,
+	}})
+	partial := recorder.Finish("llm_error")
+	if partial.Durations.ModelLoad == nil || *partial.Durations.ModelLoad != 10 ||
+		partial.Durations.PromptEvaluation == nil || *partial.Durations.PromptEvaluation != 20 ||
+		partial.Durations.Generation == nil || *partial.Durations.Generation != 30 {
+		t.Fatalf("partial telemetry was discarded: %+v", partial.Durations)
 	}
 }
 

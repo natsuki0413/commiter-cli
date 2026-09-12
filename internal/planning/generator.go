@@ -50,7 +50,7 @@ func (generator Generator) Generate(ctx context.Context, prepared contextinput.P
 	}
 	response, err := request(initial)
 	if err != nil {
-		return Result{}, generationError()
+		return generationFailure(calls, telemetry)
 	}
 	plan, violations := Validate([]byte(response.Content), fileIDs, sensitive)
 	if len(violations) == 0 {
@@ -58,15 +58,15 @@ func (generator Generator) Generate(ctx context.Context, prepared contextinput.P
 	}
 	repair, err := repairMessages(prepared.Prompt, []byte(response.Content), violations)
 	if err != nil {
-		return Result{}, generationError()
+		return generationFailure(calls, telemetry)
 	}
 	response, err = request(repair)
 	if err != nil {
-		return Result{}, generationError()
+		return generationFailure(calls, telemetry)
 	}
 	plan, violations = Validate([]byte(response.Content), fileIDs, sensitive)
 	if len(violations) != 0 {
-		return Result{}, generationError()
+		return generationFailure(calls, telemetry)
 	}
 	return Result{Plan: plan, Calls: calls, Repaired: true, Telemetry: telemetry}, nil
 }
@@ -99,6 +99,10 @@ func repairMessages(original, candidate []byte, violations []Violation) ([]ollam
 		{Role: "system", Content: "Repair JSON using the supplied constraints. Violation codes never contain sensitive raw values."},
 		{Role: "user", Content: string(payload)},
 	}, nil
+}
+
+func generationFailure(calls int, telemetry Telemetry) (Result, error) {
+	return Result{Calls: calls, Telemetry: telemetry}, generationError()
 }
 
 func generationError() error {
