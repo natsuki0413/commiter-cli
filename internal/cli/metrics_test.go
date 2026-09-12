@@ -241,6 +241,42 @@ func TestFinishMetricsDoesNotPersistStaleExitWhenOutputFails(t *testing.T) {
 	}
 }
 
+func TestFinishMetricsReportsOnceWhenPersistenceFails(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		jsonMode      bool
+		jsonExitCount int
+	}{
+		{name: "text"},
+		{name: "JSON", jsonMode: true, jsonExitCount: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			stateDir := filepath.Join(t.TempDir(), "not-a-directory")
+			if err := os.WriteFile(stateDir, []byte("fixture"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			recorder := runmetrics.New()
+			var stdout, stderr bytes.Buffer
+
+			code := finishMetrics(output.New(&stdout, &stderr, test.jsonMode), recorder, stateDir, true, exitcode.Success)
+			if code != exitcode.Internal {
+				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			}
+			combined := stdout.String() + stderr.String()
+			if strings.Count(combined, `"exit":"success"`) != test.jsonExitCount || strings.Contains(combined, `"exit":"internal_error"`) {
+				t.Fatalf("metrics exit was duplicated or rewritten: stdout=%q stderr=%q", stdout.String(), stderr.String())
+			}
+			if test.jsonMode {
+				if strings.Count(stderr.String(), `"metrics"`) != 1 || !strings.Contains(stdout.String(), `"exit_code":1`) {
+					t.Fatalf("unexpected JSON streams: stdout=%q stderr=%q", stdout.String(), stderr.String())
+				}
+			} else if strings.Count(stdout.String(), "Metrics:") != 1 || strings.Count(stdout.String(), "exit: success") != 1 || !strings.Contains(stderr.String(), "cannot create metrics state directory") {
+				t.Fatalf("unexpected text streams: stdout=%q stderr=%q", stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
 type failingWriter struct{}
 
 func (failingWriter) Write([]byte) (int, error) {

@@ -617,8 +617,6 @@ func finishMetrics(printer *output.Printer, recorder *runmetrics.Recorder, state
 	}
 	if persist {
 		if err := runmetrics.Write(stateDir, record); err != nil {
-			record = recorder.Finish(exitClassification(exitcode.Internal))
-			_ = reportMetrics(printer, record)
 			return fail(printer, exitcode.New(exitcode.Internal, err.Error()))
 		}
 	}
