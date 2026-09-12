@@ -64,14 +64,14 @@ func TestResolvePushTargetUsesUpstreamAndFallsBackToSingleRemote(t *testing.T) {
 	runGit(t, repo, "init", "-b", "main")
 	runGit(t, repo, "remote", "add", "origin", "https://example.invalid/repo.git")
 	got := ResolvePushTarget(repo)
-	if !got.Resolved || got.Remote != "origin" || got.Branch != "main" {
+	if !got.Resolved || got.Remote != "origin" || got.Branch != "main" || !got.SetUpstream {
 		t.Fatalf("single remote target=%#v", got)
 	}
 	runGit(t, repo, "remote", "add", "upstream", "https://example.invalid/upstream.git")
 	runGit(t, repo, "config", "branch.main.remote", "upstream")
 	runGit(t, repo, "config", "branch.main.merge", "refs/heads/release")
 	got = ResolvePushTarget(repo)
-	if !got.Resolved || got.Remote != "upstream" || got.Branch != "release" {
+	if !got.Resolved || got.Remote != "upstream" || got.Branch != "release" || got.SetUpstream {
 		t.Fatalf("upstream target=%#v", got)
 	}
 }

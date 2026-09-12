@@ -142,10 +142,11 @@ func readLine(reader *bufio.Reader) (string, error) {
 // repository does not provide an unambiguous target; Reason is safe metadata,
 // not command output.
 type PushTarget struct {
-	Remote   string `json:"remote"`
-	Branch   string `json:"branch"`
-	Resolved bool   `json:"resolved"`
-	Reason   string `json:"reason,omitempty"`
+	Remote      string `json:"remote"`
+	Branch      string `json:"branch"`
+	Resolved    bool   `json:"resolved"`
+	SetUpstream bool   `json:"set_upstream"`
+	Reason      string `json:"reason,omitempty"`
 }
 
 // ResolvePushTarget prefers the configured upstream. Without one it resolves
@@ -164,7 +165,7 @@ func ResolvePushTarget(root string) PushTarget {
 		return PushTarget{Remote: upstreamRemote, Branch: strings.TrimPrefix(upstreamMerge, "refs/heads/"), Resolved: true}
 	}
 	if len(remotes) == 1 && safeRemote(remotes[0]) {
-		return PushTarget{Remote: remotes[0], Branch: branch, Resolved: true}
+		return PushTarget{Remote: remotes[0], Branch: branch, Resolved: true, SetUpstream: true}
 	}
 	return PushTarget{Resolved: false, Reason: "push target is ambiguous: configure an upstream or leave exactly one remote"}
 }
