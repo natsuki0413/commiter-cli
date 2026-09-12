@@ -261,6 +261,27 @@ func TestSensitivePathRules(t *testing.T) {
 	if err != nil || level != automaticallyExcluded {
 		t.Fatalf("additional pattern = %v, %v", level, err)
 	}
+	readTests := []struct {
+		name       string
+		path       string
+		additional []string
+		approved   bool
+		want       bool
+	}{
+		{name: "ordinary", path: "safe.txt", want: true},
+		{name: "unapproved candidate", path: "credentials.json", want: false},
+		{name: "approved candidate", path: "credentials.json", approved: true, want: true},
+		{name: "automatic exclusion stays unreadable", path: ".env", approved: true, want: false},
+		{name: "additional exclusion stays unreadable", path: "private.cfg", additional: []string{"private.cfg"}, approved: true, want: false},
+	}
+	for _, test := range readTests {
+		t.Run("read/"+test.name, func(t *testing.T) {
+			got, err := ContentReadAllowed(test.path, test.additional, test.approved)
+			if err != nil || got != test.want {
+				t.Fatalf("ContentReadAllowed(%q) = %t, %v", test.path, got, err)
+			}
+		})
+	}
 }
 
 func TestChangeHashCanonicalAndSensitiveToEveryIdentityField(t *testing.T) {

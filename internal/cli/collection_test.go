@@ -7,12 +7,17 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/natsuki0413/commiter-cli/internal/commitexec"
 	"github.com/natsuki0413/commiter-cli/internal/config"
+	"github.com/natsuki0413/commiter-cli/internal/exitcode"
 	"github.com/natsuki0413/commiter-cli/internal/gitstate"
 	"github.com/natsuki0413/commiter-cli/internal/planning"
+	"github.com/natsuki0413/commiter-cli/internal/verification"
 )
 
 func TestDryRunCollectsSnapshotThroughExistingCLIBoundaries(t *testing.T) {
@@ -201,6 +206,325 @@ func TestMainRejectsPlanAndNoConfirmSkipsPrompt(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMainRunsVerificationBeforeCommit(t *testing.T) {
+	repo := cliRepository(t)
+	cliWrite(t, repo, "a.txt", "base\n", 0o644)
+	cliGit(t, repo, "add", "a.txt")
+	cliGit(t, repo, "commit", "-m", "base")
+	cliWrite(t, repo, "a.txt", "changed\n", 0o644)
+	chdir(t, repo)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	stubPlanFlow(t, nil)
+	oldInput := mainInput
+	mainInput = strings.NewReader("y\n")
+	t.Cleanup(func() { mainInput = oldInput })
+
+	order := []string{}
+	stubPostApprovalFlows(t,
+		func(context.Context, string, *verification.Definition, time.Duration, verification.StatePolicy) (verification.RunResult, error) {
+			order = append(order, "verification")
+			return verification.RunResult{}, nil
+		},
+		func(commitexec.Options) (commitexec.Result, error) {
+			order = append(order, "commit")
+			return commitexec.Result{Hashes: []string{"fixture-hash"}}, nil
+		},
+	)
+
+	var stdout, stderr bytes.Buffer
+	if code := Run(nil, &stdout, &stderr); code != 0 || stderr.Len() != 0 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if strings.Join(order, ",") != "verification,commit" || !strings.Contains(stdout.String(), "fixture-hash") {
+		t.Fatalf("order=%#v stdout=%q", order, stdout.String())
+	}
+}
+
+func TestMainStopsOnVerificationMutationAndRestoresInitialIndex(t *testing.T) {
+	repo := cliRepository(t)
+	cliWrite(t, repo, "a.txt", "base\n", 0o644)
+	cliGit(t, repo, "add", "a.txt")
+	cliGit(t, repo, "commit", "-m", "base")
+	cliWrite(t, repo, "a.txt", "planned\n", 0o644)
+	chdir(t, repo)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	stubPlanFlow(t, nil)
+	oldInput := mainInput
+	mainInput = strings.NewReader("y\nn\n")
+	t.Cleanup(func() { mainInput = oldInput })
+	commitCalled := false
+	stubPostApprovalFlows(t,
+		func(context.Context, string, *verification.Definition, time.Duration, verification.StatePolicy) (verification.RunResult, error) {
+			cliWrite(t, repo, "a.txt", "verification mutation\n", 0o644)
+			cliGit(t, repo, "add", "a.txt")
+			return verification.RunResult{Commands: []verification.CommandResult{{Name: "fixture"}}}, nil
+		},
+		func(commitexec.Options) (commitexec.Result, error) {
+			commitCalled = true
+			return commitexec.Result{}, nil
+		},
+	)
+
+	var stdout, stderr bytes.Buffer
+	if code := Run(nil, &stdout, &stderr); code != exitcode.Safety || commitCalled {
+		t.Fatalf("code=%d commitCalled=%t stdout=%q stderr=%q", code, commitCalled, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "a.txt") || !strings.Contains(stdout.String(), "Re-analyze changed state?") {
+		t.Fatalf("stdout=%q", stdout.String())
+	}
+	if cached := cliGitOutput(t, repo, "diff", "--cached", "--name-only"); cached != "" {
+		t.Fatalf("index was not restored: %q", cached)
+	}
+	contents, err := os.ReadFile(filepath.Join(repo, "a.txt"))
+	if err != nil || string(contents) != "verification mutation\n" {
+		t.Fatalf("working tree was rolled back: %q, %v", contents, err)
+	}
+}
+
+func TestMainReanalyzesCurrentStateAfterMutationApproval(t *testing.T) {
+	repo := cliRepository(t)
+	cliWrite(t, repo, "a.txt", "base\n", 0o644)
+	cliGit(t, repo, "add", "a.txt")
+	cliGit(t, repo, "commit", "-m", "base")
+	cliWrite(t, repo, "a.txt", "planned\n", 0o644)
+	chdir(t, repo)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	plans := []string{}
+	stubPlanFlow(t, &plans)
+	oldInput := mainInput
+	mainInput = strings.NewReader("y\ny\ny\n")
+	t.Cleanup(func() { mainInput = oldInput })
+	runs := 0
+	commits := 0
+	stubPostApprovalFlows(t,
+		func(context.Context, string, *verification.Definition, time.Duration, verification.StatePolicy) (verification.RunResult, error) {
+			runs++
+			if runs == 1 {
+				cliWrite(t, repo, "a.txt", "reanalyzed\n", 0o644)
+			}
+			return verification.RunResult{Commands: []verification.CommandResult{{Name: "fixture"}}}, nil
+		},
+		func(commitexec.Options) (commitexec.Result, error) {
+			commits++
+			return commitexec.Result{Hashes: []string{"fixture-hash"}}, nil
+		},
+	)
+
+	var stdout, stderr bytes.Buffer
+	if code := Run(nil, &stdout, &stderr); code != 0 || stderr.Len() != 0 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if runs != 2 || commits != 1 || len(plans) != 2 {
+		t.Fatalf("runs=%d commits=%d plans=%#v", runs, commits, plans)
+	}
+}
+
+func TestMainMapsVerificationFailureAndEscapesOutput(t *testing.T) {
+	repo := cliRepository(t)
+	cliWrite(t, repo, "a.txt", "base\n", 0o644)
+	cliGit(t, repo, "add", "a.txt")
+	cliGit(t, repo, "commit", "-m", "base")
+	cliWrite(t, repo, "a.txt", "planned\n", 0o644)
+	chdir(t, repo)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	stubPlanFlow(t, nil)
+	oldInput := mainInput
+	mainInput = strings.NewReader("y\n")
+	t.Cleanup(func() { mainInput = oldInput })
+	stubPostApprovalFlows(t,
+		func(context.Context, string, *verification.Definition, time.Duration, verification.StatePolicy) (verification.RunResult, error) {
+			return verification.RunResult{Commands: []verification.CommandResult{{Name: "fixture", Output: "bad\x1b[2J\nforged"}}}, &verification.RunError{Kind: verification.RunFailed, Command: "fixture"}
+		},
+		func(commitexec.Options) (commitexec.Result, error) {
+			t.Fatal("commit must not run after verification failure")
+			return commitexec.Result{}, nil
+		},
+	)
+
+	var stdout, stderr bytes.Buffer
+	if code := Run(nil, &stdout, &stderr); code != exitcode.Verification {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if strings.ContainsRune(stdout.String(), '\x1b') || !strings.Contains(stdout.String(), `\x1b`) || !strings.Contains(stdout.String(), `\n`) {
+		t.Fatalf("verification output was not escaped: %q", stdout.String())
+	}
+}
+
+func TestMainAllowsIgnoredVerificationOutput(t *testing.T) {
+	repo := cliRepository(t)
+	cliWrite(t, repo, ".gitignore", "generated/\n", 0o644)
+	cliWrite(t, repo, "a.txt", "base\n", 0o644)
+	cliGit(t, repo, "add", ".gitignore", "a.txt")
+	cliGit(t, repo, "commit", "-m", "base")
+	cliWrite(t, repo, "a.txt", "planned\n", 0o644)
+	chdir(t, repo)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	stubPlanFlow(t, nil)
+	oldInput := mainInput
+	mainInput = strings.NewReader("y\n")
+	t.Cleanup(func() { mainInput = oldInput })
+	commitCalled := false
+	stubPostApprovalFlows(t,
+		func(context.Context, string, *verification.Definition, time.Duration, verification.StatePolicy) (verification.RunResult, error) {
+			cliWrite(t, repo, "generated/output.txt", "ignored\n", 0o644)
+			return verification.RunResult{}, nil
+		},
+		func(commitexec.Options) (commitexec.Result, error) {
+			commitCalled = true
+			return commitexec.Result{Hashes: []string{"fixture-hash"}}, nil
+		},
+	)
+
+	var stdout, stderr bytes.Buffer
+	if code := Run(nil, &stdout, &stderr); code != 0 || !commitCalled || stderr.Len() != 0 {
+		t.Fatalf("code=%d commitCalled=%t stdout=%q stderr=%q", code, commitCalled, stdout.String(), stderr.String())
+	}
+}
+
+func TestMainAllowsUnselectedUntrackedVerificationOutput(t *testing.T) {
+	repo := cliRepository(t)
+	cliWrite(t, repo, "a.txt", "base\n", 0o644)
+	cliGit(t, repo, "add", "a.txt")
+	cliGit(t, repo, "commit", "-m", "base")
+	cliWrite(t, repo, "a.txt", "planned\n", 0o644)
+	chdir(t, repo)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	stubPlanFlow(t, nil)
+	oldInput := mainInput
+	mainInput = strings.NewReader("y\n")
+	t.Cleanup(func() { mainInput = oldInput })
+	commitCalled := false
+	stubPostApprovalFlows(t,
+		func(context.Context, string, *verification.Definition, time.Duration, verification.StatePolicy) (verification.RunResult, error) {
+			cliWrite(t, repo, "coverage.out", "outside selected pathspec\n", 0o644)
+			return verification.RunResult{}, nil
+		},
+		func(commitexec.Options) (commitexec.Result, error) {
+			commitCalled = true
+			return commitexec.Result{Hashes: []string{"fixture-hash"}}, nil
+		},
+	)
+
+	var stdout, stderr bytes.Buffer
+	if code := Run([]string{"a.txt"}, &stdout, &stderr); code != 0 || !commitCalled || stderr.Len() != 0 {
+		t.Fatalf("code=%d commitCalled=%t stdout=%q stderr=%q", code, commitCalled, stdout.String(), stderr.String())
+	}
+}
+
+func TestMainStopsForNewUntrackedInsideSelection(t *testing.T) {
+	repo := cliRepository(t)
+	cliWrite(t, repo, "a.txt", "base\n", 0o644)
+	cliGit(t, repo, "add", "a.txt")
+	cliGit(t, repo, "commit", "-m", "base")
+	cliWrite(t, repo, "a.txt", "planned\n", 0o644)
+	chdir(t, repo)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	stubPlanFlow(t, nil)
+	oldInput := mainInput
+	mainInput = strings.NewReader("y\nn\n")
+	t.Cleanup(func() { mainInput = oldInput })
+	commitCalled := false
+	stubPostApprovalFlows(t,
+		func(context.Context, string, *verification.Definition, time.Duration, verification.StatePolicy) (verification.RunResult, error) {
+			cliWrite(t, repo, "new-target.txt", "new target\n", 0o644)
+			return verification.RunResult{}, nil
+		},
+		func(commitexec.Options) (commitexec.Result, error) {
+			commitCalled = true
+			return commitexec.Result{}, nil
+		},
+	)
+
+	var stdout, stderr bytes.Buffer
+	if code := Run(nil, &stdout, &stderr); code != exitcode.Safety || commitCalled {
+		t.Fatalf("code=%d commitCalled=%t stdout=%q stderr=%q", code, commitCalled, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "new-target.txt") || !strings.Contains(stdout.String(), "Re-analyze changed state?") {
+		t.Fatalf("stdout=%q", stdout.String())
+	}
+}
+
+func TestMainDetectsUnselectedDirtyTrackedContentWithStableMetadata(t *testing.T) {
+	repo := cliRepository(t)
+	cliWrite(t, repo, "a.txt", "base\n", 0o644)
+	cliWrite(t, repo, "outside.txt", "base\n", 0o644)
+	cliGit(t, repo, "add", "a.txt", "outside.txt")
+	cliGit(t, repo, "commit", "-m", "base")
+	cliWrite(t, repo, "a.txt", "planned\n", 0o644)
+	cliWrite(t, repo, "outside.txt", "aaaa\n", 0o644)
+	outsidePath := filepath.Join(repo, "outside.txt")
+	chdir(t, repo)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	stubPlanFlow(t, nil)
+	oldInput := mainInput
+	mainInput = strings.NewReader("y\nn\n")
+	t.Cleanup(func() { mainInput = oldInput })
+	commitCalled := false
+	stubPostApprovalFlows(t,
+		func(context.Context, string, *verification.Definition, time.Duration, verification.StatePolicy) (verification.RunResult, error) {
+			info, err := os.Stat(outsidePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cliWrite(t, repo, "outside.txt", "bbbb\n", 0o644)
+			if err := os.Chtimes(outsidePath, info.ModTime(), info.ModTime()); err != nil {
+				t.Fatal(err)
+			}
+			return verification.RunResult{}, nil
+		},
+		func(commitexec.Options) (commitexec.Result, error) {
+			commitCalled = true
+			return commitexec.Result{}, nil
+		},
+	)
+
+	var stdout, stderr bytes.Buffer
+	if code := Run([]string{"a.txt"}, &stdout, &stderr); code != exitcode.Safety || commitCalled {
+		t.Fatalf("code=%d commitCalled=%t stdout=%q stderr=%q", code, commitCalled, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "outside.txt") || !strings.Contains(stdout.String(), "Re-analyze changed state?") {
+		t.Fatalf("stdout=%q", stdout.String())
+	}
+}
+
+func TestVerificationStatePolicyCarriesOnlyApprovedSensitiveChanges(t *testing.T) {
+	oldPath, newPath, ordinaryPath := "old-credentials.json", "new-credentials.json", "ordinary.txt"
+	snapshot := gitstate.Snapshot{
+		Untracked: []string{"target.txt"},
+		Changes: []gitstate.Change{
+			{OldPath: &oldPath, NewPath: &newPath, Sensitive: true},
+			{NewPath: &ordinaryPath},
+		},
+	}
+	policy := verificationStatePolicy(snapshot, config.Values{SensitivePatterns: []string{"private.cfg"}})
+	if !reflect.DeepEqual(policy.TargetUntracked, []string{"target.txt"}) {
+		t.Fatalf("target untracked = %#v", policy.TargetUntracked)
+	}
+	if !reflect.DeepEqual(policy.ApprovedSensitive, []string{"new-credentials.json", "old-credentials.json"}) {
+		t.Fatalf("approved sensitive = %#v", policy.ApprovedSensitive)
+	}
+	if !reflect.DeepEqual(policy.AdditionalSensitiveGlobs, []string{"private.cfg"}) {
+		t.Fatalf("additional sensitive globs = %#v", policy.AdditionalSensitiveGlobs)
+	}
+}
+
+func stubPostApprovalFlows(t *testing.T, verify func(context.Context, string, *verification.Definition, time.Duration, verification.StatePolicy) (verification.RunResult, error), commit func(commitexec.Options) (commitexec.Result, error)) {
+	t.Helper()
+	previousVerification, previousCommit := verificationFlow, commitFlow
+	verificationFlow, commitFlow = verify, commit
+	t.Cleanup(func() {
+		verificationFlow, commitFlow = previousVerification, previousCommit
+	})
 }
 
 func stubPlanFlow(t *testing.T, supplements *[]string) {

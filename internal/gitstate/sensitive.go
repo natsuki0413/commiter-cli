@@ -66,6 +66,23 @@ func classifySensitive(repoPath string, additional []string) (sensitivity, strin
 	return notSensitive, "", nil
 }
 
+// ContentReadAllowed applies the shared sensitive-path policy before callers
+// open file content. Automatically excluded paths are never readable.
+func ContentReadAllowed(repoPath string, additional []string, approved bool) (bool, error) {
+	level, _, err := classifySensitive(repoPath, additional)
+	if err != nil {
+		return false, err
+	}
+	switch level {
+	case notSensitive:
+		return true, nil
+	case sensitiveCandidate:
+		return approved, nil
+	default:
+		return false, nil
+	}
+}
+
 func asciiLower(value string) string {
 	var builder strings.Builder
 	builder.Grow(len(value))

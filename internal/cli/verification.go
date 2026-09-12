@@ -58,17 +58,21 @@ func authorizeVerificationDefinition(repo, stateDir string, definition *verifica
 		if err := printer.Lines(lines...); err != nil {
 			return false, fmt.Errorf("cannot write output")
 		}
-		scanner := bufio.NewScanner(input)
-		if !scanner.Scan() {
-			if err := scanner.Err(); err != nil {
-				return false, fmt.Errorf("cannot read approval")
-			}
+		line, err := readVerificationLine(input)
+		if err != nil {
 			return false, nil
 		}
-		return strings.EqualFold(strings.TrimSpace(scanner.Text()), "y"), nil
+		return strings.EqualFold(strings.TrimSpace(line), "y"), nil
 	})
 	if errors.Is(err, verification.ErrNotApproved) {
 		return exitcode.New(exitcode.Canceled, "verification approval canceled")
 	}
 	return err
+}
+
+func readVerificationLine(input io.Reader) (string, error) {
+	if reader, ok := input.(*bufio.Reader); ok {
+		return reader.ReadString('\n')
+	}
+	return bufio.NewReader(input).ReadString('\n')
 }
