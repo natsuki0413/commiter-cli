@@ -7,7 +7,7 @@ require (
 	github.com/go-enry/go-enry/v2 v2.9.6
 	github.com/pelletier/go-toml/v2 v2.4.3
 	github.com/tree-sitter/go-tree-sitter v0.25.0
-	github.com/tree-sitter/tree-sitter-css v0.23.2
+	github.com/tree-sitter/tree-sitter-css v0.25.0
 	github.com/tree-sitter/tree-sitter-go v0.25.0
 	github.com/tree-sitter/tree-sitter-html v0.23.2
 	github.com/tree-sitter/tree-sitter-javascript v0.25.0
