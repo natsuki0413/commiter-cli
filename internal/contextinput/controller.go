@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/natsuki0413/commiter-cli/internal/syntax"
 )
@@ -22,11 +23,12 @@ type Summarizer interface {
 }
 
 type Prepared struct {
-	Document     Document     `json:"document"`
-	Prompt       []byte       `json:"-"`
-	Budget       Budget       `json:"budget"`
-	SummaryStage SummaryStage `json:"summary_stage"`
-	SummaryCount int          `json:"summary_count"`
+	Document        Document      `json:"document"`
+	Prompt          []byte        `json:"-"`
+	Budget          Budget        `json:"budget"`
+	SummaryStage    SummaryStage  `json:"summary_stage"`
+	SummaryCount    int           `json:"summary_count"`
+	SummaryDuration time.Duration `json:"-"`
 }
 
 // Prepare renders and measures the exact final prompt. Oversized input is
@@ -38,37 +40,44 @@ func Prepare(ctx context.Context, document Document, config BudgetConfig, render
 	}
 	original := cloneDocument(document)
 	current := cloneDocument(document)
+	var summaryDuration time.Duration
 	if summarizer == nil {
 		standard := NewHierarchicalSummarizer()
 		summarizer = standard
 	}
+	progress := func(stage SummaryStage, count int) Prepared {
+		return Prepared{SummaryStage: stage, SummaryCount: count, SummaryDuration: summaryDuration}
+	}
 	for attempt, stage := range []SummaryStage{SummaryNone, SummaryFile, SummaryHunk, SummaryChunk} {
 		if stage != SummaryNone {
+			started := time.Now()
 			next, err := summarizer.Summarize(ctx, stage, cloneDocument(current))
+			summaryDuration += time.Since(started)
 			if err != nil {
-				return Prepared{}, fmt.Errorf("%s summary failed: %w", stage, err)
+				return progress(stage, attempt), fmt.Errorf("%s summary failed: %w", stage, err)
 			}
 			if err := ValidatePreserved(original, next); err != nil {
-				return Prepared{}, fmt.Errorf("%s summary is incomplete: %w", stage, err)
+				return progress(stage, attempt), fmt.Errorf("%s summary is incomplete: %w", stage, err)
 			}
 			current = cloneDocument(next)
 		}
 		prompt, err := render(cloneDocument(current))
 		if err != nil {
-			return Prepared{}, fmt.Errorf("cannot render planning input: %w", err)
+			return progress(stage, attempt), fmt.Errorf("cannot render planning input: %w", err)
 		}
 		budget, err := SelectContext(prompt, len(original.Files), config)
 		if err == nil {
 			return Prepared{
 				Document: cloneDocument(current), Prompt: append([]byte(nil), prompt...), Budget: budget,
 				SummaryStage: stage, SummaryCount: attempt,
+				SummaryDuration: summaryDuration,
 			}, nil
 		}
 		if !errors.Is(err, ErrTooLarge) {
-			return Prepared{}, err
+			return progress(stage, attempt), err
 		}
 	}
-	return Prepared{}, ErrTooLarge
+	return progress(SummaryChunk, 3), ErrTooLarge
 }
 
 func cloneDocument(document Document) Document {

@@ -264,9 +264,47 @@ func TestGeneratorKeepsSchemaForJapaneseSummary(t *testing.T) {
 	}
 }
 
+func TestGeneratorAggregatesOnlyNonContentTelemetry(t *testing.T) {
+	client := &scriptedChat{steps: []chatStep{{
+		content: validPlan(), model: "model:tag", loadDuration: 2,
+		promptEvalDuration: 3, evalDuration: 5, promptEvalCount: 7, evalCount: 11,
+	}}}
+	result, err := (Generator{Client: client}).Generate(context.Background(), preparedInput(t, English), English, SensitiveValues{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Telemetry != (Telemetry{Model: "model:tag", LoadDuration: 2, PromptEvalDuration: 3, EvalDuration: 5, PromptEvalCount: 7, EvalCount: 11}) {
+		t.Fatalf("telemetry=%+v", result.Telemetry)
+	}
+}
+
+func TestGeneratorKeepsTelemetryWhenRepairRequestFails(t *testing.T) {
+	client := &scriptedChat{steps: []chatStep{
+		{
+			content: `{"schema_version":1,"commits":[]}`, model: "model:tag",
+			loadDuration: 10, promptEvalDuration: 20, evalDuration: 30,
+			promptEvalCount: 4, evalCount: 5,
+		},
+		{err: errors.New("repair transport failed")},
+	}}
+	result, err := (Generator{Client: client}).Generate(context.Background(), preparedInput(t, English), English, SensitiveValues{})
+	if exitcode.Code(err) != exitcode.LLM || result.Calls != 2 {
+		t.Fatalf("error=%v code=%d calls=%d", err, exitcode.Code(err), result.Calls)
+	}
+	if result.Telemetry != (Telemetry{Model: "model:tag", LoadDuration: 10, PromptEvalDuration: 20, EvalDuration: 30, PromptEvalCount: 4, EvalCount: 5}) {
+		t.Fatalf("successful call telemetry was discarded: %+v", result.Telemetry)
+	}
+}
+
 type chatStep struct {
-	content string
-	err     error
+	content            string
+	err                error
+	model              string
+	loadDuration       int64
+	promptEvalDuration int64
+	evalDuration       int64
+	promptEvalCount    int
+	evalCount          int
 }
 
 type scriptedChat struct {
@@ -281,7 +319,11 @@ func (client *scriptedChat) Chat(_ context.Context, messages []ollama.Message, s
 	}
 	step := client.steps[0]
 	client.steps = client.steps[1:]
-	return ollama.ChatResponse{Content: step.content}, step.err
+	return ollama.ChatResponse{
+		Model: step.model, Content: step.content, LoadDuration: step.loadDuration,
+		PromptEvalDuration: step.promptEvalDuration, EvalDuration: step.evalDuration,
+		PromptEvalCount: step.promptEvalCount, EvalCount: step.evalCount,
+	}, step.err
 }
 
 func preparedInput(t *testing.T, language Language) contextinput.Prepared {

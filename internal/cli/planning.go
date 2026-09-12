@@ -11,10 +11,12 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/natsuki0413/commiter-cli/internal/config"
 	"github.com/natsuki0413/commiter-cli/internal/contextinput"
 	"github.com/natsuki0413/commiter-cli/internal/gitstate"
+	runmetrics "github.com/natsuki0413/commiter-cli/internal/metrics"
 	"github.com/natsuki0413/commiter-cli/internal/ollama"
 	"github.com/natsuki0413/commiter-cli/internal/planning"
 	"github.com/natsuki0413/commiter-cli/internal/syntax"
@@ -25,10 +27,14 @@ type planFlowFunc func(context.Context, string, gitstate.Snapshot, config.Values
 var planFlow planFlowFunc = generateCommitPlan
 
 func generateCommitPlan(ctx context.Context, root string, snapshot gitstate.Snapshot, values config.Values, supplement string) (planning.Plan, error) {
-	results, sensitive, err := analyzeForPlanning(root, snapshot)
+	recorder := runmetrics.FromContext(ctx)
+	started := time.Now()
+	results, sensitive, stats, err := analyzeForPlanningWithStats(root, snapshot)
+	recorder.AddDuration(runmetrics.SyntaxAnalysis, time.Since(started))
 	if err != nil {
 		return planning.Plan{}, err
 	}
+	recorder.SetAnalysis(values.Model, len(snapshot.Changes), stats.lines, stats.bytes, stats.syntaxSuccess, stats.syntaxFallback)
 	document, err := contextinput.Build(snapshot, results)
 	if err != nil {
 		return planning.Plan{}, err
@@ -39,19 +45,44 @@ func generateCommitPlan(ctx context.Context, root string, snapshot gitstate.Snap
 		renderer = supplementRenderer(renderer, supplement)
 	}
 	prepared, err := contextinput.Prepare(ctx, document, contextinput.BudgetConfig{Context: values.Context, MaxContextTokens: values.MaxTokens}, renderer, nil)
+	recordSummarization(recorder, prepared)
 	if err != nil {
 		return planning.Plan{}, err
 	}
+	contextStage := fmt.Sprintf("%dk", prepared.Budget.ContextTokens/1024)
+	recorder.SetContext(values.Model, contextStage)
 	runtime, err := ollama.Open(ctx, values)
 	if err != nil {
 		return planning.Plan{}, err
 	}
 	defer runtime.Close()
 	generated, err := (planning.Generator{Client: runtime.Client}).Generate(ctx, prepared, language, sensitive)
+	recordGeneratedTelemetry(recorder, generated)
 	if err != nil {
 		return planning.Plan{}, err
 	}
+	model := generated.Telemetry.Model
+	if model == "" {
+		model = values.Model
+	}
+	recorder.SetContext(model, contextStage)
 	return generated.Plan, nil
+}
+
+func recordSummarization(recorder *runmetrics.Recorder, prepared contextinput.Prepared) {
+	if prepared.SummaryCount > 0 {
+		recorder.AddDuration(runmetrics.Summarization, prepared.SummaryDuration)
+		recorder.AddSummaries(prepared.SummaryCount)
+	}
+}
+
+func recordGeneratedTelemetry(recorder *runmetrics.Recorder, generated planning.Result) {
+	if generated.Telemetry == (planning.Telemetry{}) {
+		return
+	}
+	recorder.AddDuration(runmetrics.ModelLoad, time.Duration(generated.Telemetry.LoadDuration))
+	recorder.AddDuration(runmetrics.PromptEvaluation, time.Duration(generated.Telemetry.PromptEvalDuration))
+	recorder.AddDuration(runmetrics.Generation, time.Duration(generated.Telemetry.EvalDuration))
 }
 
 func supplementRenderer(base contextinput.Renderer, supplement string) contextinput.Renderer {
@@ -73,18 +104,38 @@ func supplementRenderer(base contextinput.Renderer, supplement string) contextin
 }
 
 func analyzeForPlanning(root string, snapshot gitstate.Snapshot) ([]syntax.ChangeResult, planning.SensitiveValues, error) {
+	results, sensitive, _, err := analyzeForPlanningWithStats(root, snapshot)
+	return results, sensitive, err
+}
+
+type planningStats struct {
+	lines          int
+	bytes          int64
+	syntaxSuccess  int
+	syntaxFallback int
+}
+
+func analyzeForPlanningWithStats(root string, snapshot gitstate.Snapshot) ([]syntax.ChangeResult, planning.SensitiveValues, planningStats, error) {
 	results := make([]syntax.ChangeResult, 0, len(snapshot.Changes))
 	sensitiveInputs := make([][]byte, 0, len(snapshot.Changes)*2)
+	stats := planningStats{}
 	for _, change := range snapshot.Changes {
 		content, rawDiff, hunks, err := planningInput(root, change)
 		if err != nil {
-			return nil, planning.SensitiveValues{}, err
+			return nil, planning.SensitiveValues{}, stats, err
 		}
 		result, err := syntax.AnalyzeChange(syntax.ChangeInput{Change: change, Content: content, RawDiff: rawDiff, Hunks: hunks})
 		if err != nil {
-			return nil, planning.SensitiveValues{}, err
+			return nil, planning.SensitiveValues{}, stats, err
 		}
 		results = append(results, result)
+		stats.bytes += change.Size
+		stats.lines += lineCount(content)
+		if result.Mode == syntax.ModeStructural {
+			stats.syntaxSuccess++
+		} else if result.Mode == syntax.ModeRawDiff {
+			stats.syntaxFallback++
+		}
 		if change.Sensitive {
 			if len(content) > 0 {
 				sensitiveInputs = append(sensitiveInputs, content)
@@ -94,7 +145,7 @@ func analyzeForPlanning(root string, snapshot gitstate.Snapshot) ([]syntax.Chang
 			}
 		}
 	}
-	return results, planning.ExtractSensitiveValues(sensitiveInputs...), nil
+	return results, planning.ExtractSensitiveValues(sensitiveInputs...), stats, nil
 }
 
 func planningInput(root string, change gitstate.Change) ([]byte, string, []syntax.Hunk, error) {

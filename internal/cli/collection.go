@@ -18,6 +18,7 @@ import (
 	"github.com/natsuki0413/commiter-cli/internal/exitcode"
 	"github.com/natsuki0413/commiter-cli/internal/gitstate"
 	"github.com/natsuki0413/commiter-cli/internal/interaction"
+	runmetrics "github.com/natsuki0413/commiter-cli/internal/metrics"
 	"github.com/natsuki0413/commiter-cli/internal/output"
 	"github.com/natsuki0413/commiter-cli/internal/planning"
 	"github.com/natsuki0413/commiter-cli/internal/pushexec"
@@ -30,18 +31,20 @@ var verificationFlow = verification.Run
 var commitFlow = commitexec.Execute
 var pushFlow = pushexec.Execute
 
-func runCollection(opts options, root string, values config.Values, printer *output.Printer) int {
+func runCollection(opts options, root string, values config.Values, printer *output.Printer, recorder *runmetrics.Recorder) int {
 	reader := bufio.NewReader(mainInput)
 	repeatedMutation := map[string]int{}
 	for {
-		code, reanalyze := runCollectionCycle(opts, root, values, reader, printer, repeatedMutation)
+		code, reanalyze := runCollectionCycle(opts, root, values, reader, printer, repeatedMutation, recorder)
 		if !reanalyze {
 			return code
 		}
 	}
 }
 
-func runCollectionCycle(opts options, root string, values config.Values, reader *bufio.Reader, printer *output.Printer, repeatedMutation map[string]int) (int, bool) {
+func runCollectionCycle(opts options, root string, values config.Values, reader *bufio.Reader, printer *output.Printer, repeatedMutation map[string]int, recorder *runmetrics.Recorder) (int, bool) {
+	started := time.Now()
+	var approvalWait time.Duration
 	snapshot, err := collectSnapshot(root, values, opts.pathspecs, func(candidates []gitstate.Candidate) (bool, error) {
 		lines := []string{"Sensitive candidates require approval before reading:"}
 		for _, candidate := range candidates {
@@ -51,8 +54,12 @@ func runCollectionCycle(opts options, root string, values config.Values, reader 
 		if err := printer.PromptLines(lines...); err != nil {
 			return false, err
 		}
-		return readYes(reader), nil
+		waitStarted := time.Now()
+		approved := readYes(reader)
+		approvalWait += time.Since(waitStarted)
+		return approved, nil
 	})
+	recorder.AddDuration(runmetrics.GitPreprocessing, time.Since(started)-approvalWait)
 	if err != nil {
 		return fail(printer, classifyCollectionError(err)), false
 	}
@@ -80,7 +87,8 @@ func runCollectionCycle(opts options, root string, values config.Values, reader 
 		return fail(printer, exitcode.New(exitcode.Usage, err.Error())), false
 	}
 	pushTarget := interaction.ResolvePushTarget(root)
-	plan, err := planFlow(context.Background(), root, snapshot, values, "")
+	metricsContext := runmetrics.WithRecorder(context.Background(), recorder)
+	plan, err := planFlow(metricsContext, root, snapshot, values, "")
 	if err != nil {
 		return fail(printer, err), false
 	}
@@ -115,7 +123,7 @@ func runCollectionCycle(opts options, root string, values config.Values, reader 
 			case interaction.Reject:
 				return fail(printer, exitcode.New(exitcode.Canceled, "commit plan rejected")), false
 			case interaction.Regenerate:
-				plan, err = planFlow(context.Background(), root, snapshot, values, supplement)
+				plan, err = planFlow(metricsContext, root, snapshot, values, supplement)
 				if err != nil {
 					return fail(printer, err), false
 				}
@@ -138,7 +146,15 @@ approved:
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	runResult, runErr := verificationFlow(ctx, root, definition, time.Duration(values.Timeout)*time.Second, statePolicy)
+	var runResult verification.RunResult
+	var runErr error
+	if definition != nil && len(definition.Commands) > 0 {
+		started = time.Now()
+		runResult, runErr = verificationFlow(ctx, root, definition, time.Duration(values.Timeout)*time.Second, statePolicy)
+		recorder.AddDuration(runmetrics.Verification, time.Since(started))
+	} else {
+		runResult, runErr = verificationFlow(ctx, root, definition, time.Duration(values.Timeout)*time.Second, statePolicy)
+	}
 	if err := printVerificationResults(printer, runResult); err != nil {
 		if restoreErr := initialState.RestoreIndex(); restoreErr != nil {
 			return fail(printer, exitcode.New(exitcode.Commit, "verification output failed and index restoration is unknown")), false
@@ -216,7 +232,9 @@ approved:
 	}
 
 	var hookOutput bytes.Buffer
+	started = time.Now()
 	result, commitErr := commitFlow(commitexec.Options{Context: ctx, Root: root, Changes: snapshot.Changes, Plan: plan, Writer: &hookOutput})
+	recorder.AddDuration(runmetrics.Git, time.Since(started))
 	if hookOutput.Len() > 0 {
 		if err := printer.Lines("Git hook output: " + hookOutput.String()); err != nil {
 			return fail(printer, exitcode.New(exitcode.Internal, "cannot write hook output")), false
@@ -274,11 +292,14 @@ approved:
 	} else if err := printer.Lines("Push confirmation skipped by configuration."); err != nil {
 		return fail(printer, exitcode.New(exitcode.Internal, "cannot write output")), false
 	}
-	if err := pushFlow(ctx, root, actualTarget); err != nil {
-		if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+	started = time.Now()
+	pushErr := pushFlow(ctx, root, actualTarget)
+	recorder.AddDuration(runmetrics.Push, time.Since(started))
+	if pushErr != nil {
+		if ctx.Err() != nil || errors.Is(pushErr, context.Canceled) {
 			return fail(printer, exitcode.New(exitcode.Interrupted, "push interrupted; local commits were kept")), false
 		}
-		return fail(printer, exitcode.New(exitcode.Push, err.Error())), false
+		return fail(printer, exitcode.New(exitcode.Push, pushErr.Error())), false
 	}
 	if err := printer.Lines("Push completed."); err != nil {
 		return fail(printer, exitcode.New(exitcode.Internal, "cannot write output")), false

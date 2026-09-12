@@ -35,9 +35,21 @@ func (commit Commit) Subject() string {
 }
 
 type Result struct {
-	Plan     Plan
-	Calls    int
-	Repaired bool
+	Plan      Plan
+	Calls     int
+	Repaired  bool
+	Telemetry Telemetry
+}
+
+// Telemetry contains only numeric Ollama timings/counts and the model tag.
+// It deliberately excludes prompts, generated content, and validation reasons.
+type Telemetry struct {
+	Model              string
+	LoadDuration       int64
+	PromptEvalDuration int64
+	EvalDuration       int64
+	PromptEvalCount    int
+	EvalCount          int
 }
 
 type Violation string

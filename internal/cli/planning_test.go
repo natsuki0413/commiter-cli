@@ -36,6 +36,28 @@ func TestAnalyzeForPlanningExtractsValuesOnlyFromApprovedSensitiveCandidates(t *
 	}
 }
 
+func TestPlanningStatsDoNotInventSyntaxFallbackForMetadataOnlyFiles(t *testing.T) {
+	repo := cliRepository(t)
+	cliWrite(t, repo, "main.go", "package main\nfunc main() {}\n", 0o644)
+	cliWrite(t, repo, "asset.bin", "\x00base", 0o644)
+	cliGit(t, repo, "add", "main.go", "asset.bin")
+	cliGit(t, repo, "commit", "-m", "base")
+	cliWrite(t, repo, "main.go", "package main\nfunc main() { println(1) }\n", 0o644)
+	cliWrite(t, repo, "asset.bin", "\x00changed", 0o644)
+	snapshot, err := gitstate.Collect(repo, gitstate.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, stats, err := analyzeForPlanningWithStats(repo, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.syntaxSuccess != 1 || stats.syntaxFallback != 0 || stats.lines != 2 || stats.bytes == 0 {
+		t.Fatalf("stats=%+v", stats)
+	}
+}
+
 func TestWorktreeDiffTreatsCollectedPathsLiterally(t *testing.T) {
 	repo := cliRepository(t)
 	cliWrite(t, repo, "*", "literal base\n", 0o644)
