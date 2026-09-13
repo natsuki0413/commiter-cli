@@ -106,7 +106,7 @@ func TestChatFixesSafetyFieldsAndReturnsContent(t *testing.T) {
 	}
 }
 
-func TestChatWithOptionsSendsSelectedContext(t *testing.T) {
+func TestChatWithOptionsSendsSelectedContextAndOutputLimit(t *testing.T) {
 	for _, contextTokens := range []int{8192, 16384, 32768} {
 		t.Run(fmt.Sprint(contextTokens), func(t *testing.T) {
 			var received map[string]any
@@ -122,11 +122,11 @@ func TestChatWithOptionsSendsSelectedContext(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := client.ChatWithOptions(context.Background(), []Message{{Role: "user", Content: "prompt"}}, json.RawMessage(`{"type":"object"}`), ChatOptions{ContextTokens: contextTokens}); err != nil {
+			if _, err := client.ChatWithOptions(context.Background(), []Message{{Role: "user", Content: "prompt"}}, json.RawMessage(`{"type":"object"}`), ChatOptions{ContextTokens: contextTokens, OutputTokens: 1024}); err != nil {
 				t.Fatal(err)
 			}
 			options, ok := received["options"].(map[string]any)
-			if !ok || options["num_ctx"] != float64(contextTokens) {
+			if !ok || options["num_ctx"] != float64(contextTokens) || options["num_predict"] != float64(1024) {
 				t.Fatalf("options = %#v", received["options"])
 			}
 		})

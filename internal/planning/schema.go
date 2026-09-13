@@ -56,7 +56,7 @@ func Schema(fileIDs []string) (json.RawMessage, error) {
 		"properties": map[string]any{
 			"schema_version": map[string]any{"type": "integer", "const": SchemaVersion},
 			"commits": map[string]any{
-				"type": "array", "minItems": 1,
+				"type": "array", "minItems": 1, "maxItems": len(ids),
 				"items": map[string]any{
 					"type": "object", "additionalProperties": false,
 					"properties": map[string]any{
@@ -64,7 +64,7 @@ func Schema(fileIDs []string) (json.RawMessage, error) {
 						"scope":    map[string]any{"type": "string", "minLength": 1, "pattern": `^[^\r\n]+$`},
 						"breaking": map[string]any{"type": "boolean"},
 						"summary":  map[string]any{"type": "string", "minLength": 1, "pattern": `^[^\r\n]+$`},
-						"file_ids": map[string]any{"type": "array", "minItems": 1, "uniqueItems": true, "items": map[string]any{"type": "string", "enum": ids}},
+						"file_ids": map[string]any{"type": "array", "minItems": 1, "maxItems": len(ids), "uniqueItems": true, "items": map[string]any{"type": "string", "enum": ids}},
 					},
 					"required": []string{"type", "scope", "breaking", "summary", "file_ids"},
 				},

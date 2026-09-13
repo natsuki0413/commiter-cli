@@ -53,6 +53,25 @@ func TestRendererBuildsDeterministicUntrustedDataEnvelope(t *testing.T) {
 	}
 }
 
+func TestSchemaBoundsCommitAndFileIDArraysByRequiredFileCount(t *testing.T) {
+	encoded, err := Schema([]string{"F001", "F002"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(encoded, &schema); err != nil {
+		t.Fatal(err)
+	}
+	properties := schema["properties"].(map[string]any)
+	commits := properties["commits"].(map[string]any)
+	items := commits["items"].(map[string]any)
+	commitProperties := items["properties"].(map[string]any)
+	fileIDs := commitProperties["file_ids"].(map[string]any)
+	if commits["maxItems"] != float64(2) || fileIDs["maxItems"] != float64(2) {
+		t.Fatalf("schema does not bound arrays by required files: %s", encoded)
+	}
+}
+
 func TestValidateAcceptsLegalGroupingWithoutReordering(t *testing.T) {
 	candidate := []byte(`{"schema_version":1,"commits":[{"type":"test","scope":"planner","breaking":false,"summary":"cover validation","file_ids":["F002"]},{"type":"feat","scope":"planner","breaking":true,"summary":"generate plans","file_ids":["F001"]}]}`)
 	plan, violations := Validate(candidate, []string{"F001", "F002"}, SensitiveValues{})
@@ -229,7 +248,7 @@ func TestGeneratorRepairsOnceAndSharesTransportRetryBudget(t *testing.T) {
 	}
 }
 
-func TestGeneratorPassesPreparedContextToInitialAndRepair(t *testing.T) {
+func TestGeneratorPassesPreparedContextAndOutputLimitToInitialAndRepair(t *testing.T) {
 	client := &optionsScriptedChat{scriptedChat: scriptedChat{steps: []chatStep{{content: "invalid"}, {content: validPlan()}}}}
 	prepared := preparedInput(t, English)
 	if _, err := (Generator{Client: client}).Generate(context.Background(), prepared, English, SensitiveValues{}); err != nil {
@@ -237,6 +256,9 @@ func TestGeneratorPassesPreparedContextToInitialAndRepair(t *testing.T) {
 	}
 	if !reflect.DeepEqual(client.contexts, []int{contextinput.Context8K, contextinput.Context8K}) {
 		t.Fatalf("contexts = %v", client.contexts)
+	}
+	if !reflect.DeepEqual(client.outputs, []int{contextinput.MinimumOutputSpace, contextinput.MinimumOutputSpace}) {
+		t.Fatalf("outputs = %v", client.outputs)
 	}
 }
 
@@ -256,6 +278,19 @@ func TestGeneratorStopsAtThreeCallsAndNeverRepairsTwice(t *testing.T) {
 				t.Fatalf("error=%v code=%d calls=%d", err, exitcode.Code(err), len(client.messages))
 			}
 		})
+	}
+}
+
+func TestGeneratorReportsOnlyFinalViolationCodes(t *testing.T) {
+	candidate := `{"schema_version":1,"commits":[{"type":"fix","scope":"x","breaking":false,"summary":"s","file_ids":["F001"]}]}`
+	client := &scriptedChat{steps: []chatStep{{content: candidate}, {content: candidate}}}
+
+	_, err := (Generator{Client: client}).Generate(context.Background(), preparedInput(t, English), English, SensitiveValues{})
+	if exitcode.Code(err) != exitcode.LLM || !strings.Contains(err.Error(), "violations: invalid_assignment") {
+		t.Fatalf("error=%v code=%d", err, exitcode.Code(err))
+	}
+	if strings.Contains(err.Error(), candidate) || strings.Contains(err.Error(), "F001") {
+		t.Fatalf("error exposed candidate content: %v", err)
 	}
 }
 
@@ -326,10 +361,12 @@ type scriptedChat struct {
 type optionsScriptedChat struct {
 	scriptedChat
 	contexts []int
+	outputs  []int
 }
 
 func (client *optionsScriptedChat) ChatWithOptions(ctx context.Context, messages []ollama.Message, schema json.RawMessage, options ollama.ChatOptions) (ollama.ChatResponse, error) {
 	client.contexts = append(client.contexts, options.ContextTokens)
+	client.outputs = append(client.outputs, options.OutputTokens)
 	return client.Chat(ctx, messages, schema)
 }
 
