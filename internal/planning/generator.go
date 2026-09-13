@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 
 	"github.com/natsuki0413/commiter-cli/internal/contextinput"
 	"github.com/natsuki0413/commiter-cli/internal/exitcode"
@@ -40,7 +41,10 @@ func (generator Generator) Generate(ctx context.Context, prepared contextinput.P
 			var response ollama.ChatResponse
 			var callErr error
 			if client, ok := generator.Client.(optionsChatClient); ok {
-				response, callErr = client.ChatWithOptions(ctx, messages, schema, ollama.ChatOptions{ContextTokens: prepared.Budget.ContextTokens})
+				response, callErr = client.ChatWithOptions(ctx, messages, schema, ollama.ChatOptions{
+					ContextTokens: prepared.Budget.ContextTokens,
+					OutputTokens:  prepared.Budget.ReservedOutputTokens,
+				})
 			} else {
 				response, callErr = generator.Client.Chat(ctx, messages, schema)
 			}
@@ -60,7 +64,7 @@ func (generator Generator) Generate(ctx context.Context, prepared contextinput.P
 	}
 	response, err := request(initial)
 	if err != nil {
-		return generationFailure(calls, telemetry)
+		return generationFailure(calls, telemetry, nil)
 	}
 	plan, violations := Validate([]byte(response.Content), fileIDs, sensitive)
 	if len(violations) == 0 {
@@ -68,15 +72,15 @@ func (generator Generator) Generate(ctx context.Context, prepared contextinput.P
 	}
 	repair, err := repairMessages(prepared.Prompt, []byte(response.Content), violations)
 	if err != nil {
-		return generationFailure(calls, telemetry)
+		return generationFailure(calls, telemetry, violations)
 	}
 	response, err = request(repair)
 	if err != nil {
-		return generationFailure(calls, telemetry)
+		return generationFailure(calls, telemetry, nil)
 	}
 	plan, violations = Validate([]byte(response.Content), fileIDs, sensitive)
 	if len(violations) != 0 {
-		return generationFailure(calls, telemetry)
+		return generationFailure(calls, telemetry, violations)
 	}
 	return Result{Plan: plan, Calls: calls, Repaired: true, Telemetry: telemetry}, nil
 }
@@ -111,10 +115,18 @@ func repairMessages(original, candidate []byte, violations []Violation) ([]ollam
 	}, nil
 }
 
-func generationFailure(calls int, telemetry Telemetry) (Result, error) {
-	return Result{Calls: calls, Telemetry: telemetry}, generationError()
+func generationFailure(calls int, telemetry Telemetry, violations []Violation) (Result, error) {
+	return Result{Calls: calls, Telemetry: telemetry}, generationError(violations)
 }
 
-func generationError() error {
-	return exitcode.New(exitcode.LLM, "Ollama could not produce a safe, completely assigned commit plan")
+func generationError(violations []Violation) error {
+	message := "Ollama could not produce a safe, completely assigned commit plan"
+	if len(violations) > 0 {
+		codes := make([]string, len(violations))
+		for index, violation := range violations {
+			codes[index] = string(violation)
+		}
+		message += " (violations: " + strings.Join(codes, ", ") + ")"
+	}
+	return exitcode.New(exitcode.LLM, message)
 }

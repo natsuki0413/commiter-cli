@@ -43,6 +43,7 @@ type ChatResponse struct {
 // ChatOptions controls optional Ollama chat settings selected by the caller.
 type ChatOptions struct {
 	ContextTokens int
+	OutputTokens  int
 }
 
 type CapabilityResult struct {
@@ -256,16 +257,18 @@ func (c *Client) ChatWithOptions(ctx context.Context, messages []Message, schema
 		Stream    bool            `json:"stream"`
 		KeepAlive int             `json:"keep_alive"`
 		Options   *struct {
-			NumCtx int `json:"num_ctx"`
+			NumCtx     int `json:"num_ctx,omitempty"`
+			NumPredict int `json:"num_predict,omitempty"`
 		} `json:"options,omitempty"`
 	}{
 		Model: c.model, Messages: messages, Format: schema,
 		Think: false, Stream: false, KeepAlive: 0,
 	}
-	if options.ContextTokens > 0 {
+	if options.ContextTokens > 0 || options.OutputTokens > 0 {
 		payload.Options = &struct {
-			NumCtx int `json:"num_ctx"`
-		}{NumCtx: options.ContextTokens}
+			NumCtx     int `json:"num_ctx,omitempty"`
+			NumPredict int `json:"num_predict,omitempty"`
+		}{NumCtx: options.ContextTokens, NumPredict: options.OutputTokens}
 	}
 
 	var response struct {
