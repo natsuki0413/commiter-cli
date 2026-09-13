@@ -47,7 +47,7 @@ func runCollectionCycle(opts options, root string, values config.Values, reader 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	var approvalWait time.Duration
-	snapshot, err := collectSnapshot(root, values, opts.pathspecs, func(candidates []gitstate.Candidate) (bool, error) {
+	snapshot, err := collectSnapshot(ctx, root, values, opts.pathspecs, func(candidates []gitstate.Candidate) (bool, error) {
 		lines := []string{"Sensitive candidates require approval before reading:"}
 		for _, candidate := range candidates {
 			lines = append(lines, fmt.Sprintf("%s (%s)", candidate.Path, candidate.Reason))
@@ -200,7 +200,7 @@ approved:
 	}
 
 	afterState, stateErr := verification.CaptureRepositoryState(root, statePolicy)
-	current, collectErr := revalidateSnapshot(root, values, opts.pathspecs, snapshot)
+	current, collectErr := revalidateSnapshot(ctx, root, values, opts.pathspecs, snapshot)
 	if ctx.Err() != nil {
 		if err := initialState.RestoreIndex(); err != nil {
 			return fail(printer, exitcode.New(exitcode.Commit, "verification interrupted and index restoration is unknown")), false
@@ -251,7 +251,7 @@ approved:
 		}
 		approved, err := readYesContext(ctx, reader)
 		if err != nil {
-			return fail(printer, interruptedBeforeCommit()), false
+			return fail(printer, interruptedAfterVerificationMutation()), false
 		}
 		if approved {
 			return exitcode.Success, true
@@ -363,8 +363,9 @@ func readYesContext(ctx context.Context, reader *bufio.Reader) (bool, error) {
 	}
 }
 
-func collectSnapshot(root string, values config.Values, pathspecs []string, approve func([]gitstate.Candidate) (bool, error)) (gitstate.Snapshot, error) {
+func collectSnapshot(ctx context.Context, root string, values config.Values, pathspecs []string, approve func([]gitstate.Candidate) (bool, error)) (gitstate.Snapshot, error) {
 	return gitstate.Collect(root, gitstate.Options{
+		Context:                    ctx,
 		Pathspecs:                  pathspecs,
 		Include:                    values.Include,
 		Exclude:                    values.Exclude,
@@ -387,7 +388,7 @@ func readYes(reader *bufio.Reader) bool {
 	return answer == "y" || answer == "Y" || strings.EqualFold(answer, "yes")
 }
 
-func revalidateSnapshot(root string, values config.Values, pathspecs []string, original gitstate.Snapshot) (gitstate.Snapshot, error) {
+func revalidateSnapshot(ctx context.Context, root string, values config.Values, pathspecs []string, original gitstate.Snapshot) (gitstate.Snapshot, error) {
 	approved := map[string]bool{}
 	for _, change := range original.Changes {
 		if change.Sensitive {
@@ -396,7 +397,7 @@ func revalidateSnapshot(root string, values config.Values, pathspecs []string, o
 			}
 		}
 	}
-	return collectSnapshot(root, values, pathspecs, func(candidates []gitstate.Candidate) (bool, error) {
+	return collectSnapshot(ctx, root, values, pathspecs, func(candidates []gitstate.Candidate) (bool, error) {
 		for _, candidate := range candidates {
 			if !approved[candidate.Path] {
 				return false, nil
@@ -532,6 +533,10 @@ func classifyPlanningError(ctx context.Context, err error) error {
 
 func interruptedBeforeCommit() error {
 	return exitcode.New(exitcode.Interrupted, "interrupted before commit; Git state was not changed")
+}
+
+func interruptedAfterVerificationMutation() error {
+	return exitcode.New(exitcode.Interrupted, "interrupted before commit; initial index was restored; verification changes remain in the working tree")
 }
 
 func uniqueStrings(values []string) []string {

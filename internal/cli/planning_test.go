@@ -1,11 +1,23 @@
 package cli
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/natsuki0413/commiter-cli/internal/gitstate"
 )
+
+func TestAnalyzeForPlanningStopsWhenContextIsCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, _, _, err := analyzeForPlanningWithStatsContext(ctx, t.TempDir(), gitstate.Snapshot{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v", err)
+	}
+}
 
 func TestAnalyzeForPlanningExtractsValuesOnlyFromApprovedSensitiveCandidates(t *testing.T) {
 	repo := cliRepository(t)

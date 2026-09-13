@@ -1,8 +1,10 @@
 package gitstate
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -12,6 +14,26 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestGitBytesStopsWhenContextIsCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := gitBytes(ctx, t.TempDir(), "status")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestCollectStopsWhenContextIsCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := Collect(t.TempDir(), Options{Context: ctx})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v", err)
+	}
+}
 
 func TestCollectMixedChangesWithoutReadingRejectedSensitivePaths(t *testing.T) {
 	repo := newRepository(t)

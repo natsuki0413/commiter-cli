@@ -1,6 +1,7 @@
 package syntax
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -37,6 +38,16 @@ func TestAnalyzeAllSupportedLanguages(t *testing.T) {
 				t.Fatalf("kind %q not found in %#v", test.kind, result.Evidence)
 			}
 		})
+	}
+}
+
+func TestAnalyzeChangeStopsWhenContextIsCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := AnalyzeChangeContext(ctx, ChangeInput{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v", err)
 	}
 }
 

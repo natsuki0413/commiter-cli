@@ -545,7 +545,9 @@ func TestMainInterruptsWhileWaitingForVerificationMutationReanalysis(t *testing.
 		if result.code != exitcode.Interrupted || commitCalled {
 			t.Fatalf("code=%d commitCalled=%t stdout=%q stderr=%q", result.code, commitCalled, result.stdout, result.stderr)
 		}
-		if !strings.Contains(result.stdout, "Re-analyze changed state?") || !strings.Contains(result.stderr, "before commit") {
+		if !strings.Contains(result.stdout, "Re-analyze changed state?") ||
+			!strings.Contains(result.stderr, "initial index was restored") ||
+			!strings.Contains(result.stderr, "verification changes remain in the working tree") {
 			t.Fatalf("stdout=%q stderr=%q", result.stdout, result.stderr)
 		}
 	case <-time.After(time.Second):
