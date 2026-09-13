@@ -1,6 +1,7 @@
 package gitstate
 
 import (
+	"context"
 	"crypto/sha1" // #nosec G505 -- Git SHA-1 object identity is a repository format, not a security primitive.
 	"crypto/sha256"
 	"encoding/hex"
@@ -26,7 +27,10 @@ type hashRecord struct {
 	WorktreeIdentity *string `json:"working_tree_identity"`
 }
 
-func buildChange(root string, raw rawChange, files FileReader, approvedSensitive bool, objectFormat string) (Change, bool, error) {
+func buildChange(ctx context.Context, root string, raw rawChange, files FileReader, approvedSensitive bool, objectFormat string) (Change, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return Change{}, false, err
+	}
 	change := Change{
 		Status:       raw.status,
 		OldPath:      raw.oldPath,
@@ -42,7 +46,7 @@ func buildChange(root string, raw rawChange, files FileReader, approvedSensitive
 			change.Vendor = enry.IsVendor(*raw.oldPath)
 			if raw.oldMode == nil || *raw.oldMode != "160000" {
 				if raw.headIdentity != nil {
-					content, err := gitBytes(root, "cat-file", "blob", *raw.headIdentity)
+					content, err := gitBytes(ctx, root, "cat-file", "blob", *raw.headIdentity)
 					if err != nil {
 						return Change{}, false, internal("cannot classify deleted file")
 					}
@@ -80,7 +84,7 @@ func buildChange(root string, raw rawChange, files FileReader, approvedSensitive
 	case change.NewMode != nil && *change.NewMode == "160000":
 		identity := raw.indexID
 		if info.IsDir() {
-			if current, currentErr := gitText(absolute, "rev-parse", "--verify", "HEAD"); currentErr == nil {
+			if current, currentErr := gitText(ctx, absolute, "rev-parse", "--verify", "HEAD"); currentErr == nil {
 				identity = &current
 			}
 		}
@@ -108,6 +112,9 @@ func buildChange(root string, raw rawChange, files FileReader, approvedSensitive
 		content, err := files.ReadFile(absolute)
 		if err != nil {
 			return Change{}, false, internal("cannot read selected file")
+		}
+		if err := ctx.Err(); err != nil {
+			return Change{}, false, err
 		}
 		identity := sha256Hex(content)
 		change.WorktreeKind = "file"
@@ -224,12 +231,12 @@ func anyGlob(paths, patterns []string) (bool, error) {
 	return false, nil
 }
 
-func indexIdentity(root string) (string, error) {
-	staged, err := gitBytes(root, "ls-files", "--stage", "-z")
+func indexIdentity(ctx context.Context, root string) (string, error) {
+	staged, err := gitBytes(ctx, root, "ls-files", "--stage", "-z")
 	if err != nil {
 		return "", commandFailure("snapshot Git index")
 	}
-	flags, err := gitBytes(root, "ls-files", "-v", "-z")
+	flags, err := gitBytes(ctx, root, "ls-files", "-v", "-z")
 	if err != nil {
 		return "", commandFailure("snapshot Git index flags")
 	}

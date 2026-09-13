@@ -2,13 +2,58 @@ package interaction
 
 import (
 	"bytes"
+	"context"
+	"errors"
+	"io"
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/natsuki0413/commiter-cli/internal/output"
 	"github.com/natsuki0413/commiter-cli/internal/planning"
 )
+
+func TestReviewContextStopsWhileWaitingForPlanConfirmation(t *testing.T) {
+	input := &blockingReviewReader{started: make(chan struct{}), release: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var out, stderr bytes.Buffer
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := (Reviewer{In: input, Printer: output.New(&out, &stderr, false)}).ReviewContext(ctx, ReviewRequest{
+			Plan:  planning.Plan{SchemaVersion: planning.SchemaVersion, Commits: []planning.Commit{{Type: "fix", Scope: "cli", Summary: "cancel", FileIDs: []string{"F001"}}}},
+			Files: map[string]string{"F001": "main.go"},
+		})
+		done <- err
+	}()
+	<-input.started
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("error=%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("review did not stop after cancellation")
+	}
+	close(input.release)
+}
+
+type blockingReviewReader struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (r *blockingReviewReader) Read([]byte) (int, error) {
+	select {
+	case <-r.started:
+	default:
+		close(r.started)
+	}
+	<-r.release
+	return 0, io.EOF
+}
 
 func TestReviewApproveRegenerateAndReject(t *testing.T) {
 	plan := planning.Plan{SchemaVersion: planning.SchemaVersion, Commits: []planning.Commit{{Type: "fix", Scope: "cli", Summary: "safe output", FileIDs: []string{"F001"}}}}

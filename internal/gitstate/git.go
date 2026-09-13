@@ -2,6 +2,7 @@ package gitstate
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -15,22 +16,22 @@ type repositoryState struct {
 	objectFormat string
 }
 
-func inspect(root string) (repositoryState, error) {
+func inspect(ctx context.Context, root string) (repositoryState, error) {
 	state := repositoryState{}
 	var err error
-	if state.head, err = gitText(root, "rev-parse", "--verify", "HEAD"); err != nil {
+	if state.head, err = gitText(ctx, root, "rev-parse", "--verify", "HEAD"); err != nil {
 		return state, safety("repository does not have a valid HEAD")
 	}
-	if state.branch, err = gitText(root, "symbolic-ref", "--quiet", "--short", "HEAD"); err != nil {
+	if state.branch, err = gitText(ctx, root, "symbolic-ref", "--quiet", "--short", "HEAD"); err != nil {
 		return state, safety("detached HEAD is not supported")
 	}
-	if state.objectFormat, err = gitText(root, "rev-parse", "--show-object-format"); err != nil {
+	if state.objectFormat, err = gitText(ctx, root, "rev-parse", "--show-object-format"); err != nil {
 		return state, internal("cannot determine Git object format")
 	}
 	if state.objectFormat != "sha1" && state.objectFormat != "sha256" {
 		return state, safety("unsupported Git object format")
 	}
-	indexPath, err := gitPath(root, "--git-path", "index")
+	indexPath, err := gitPath(ctx, root, "--git-path", "index")
 	if err != nil {
 		return state, internal("cannot resolve Git index")
 	}
@@ -53,7 +54,7 @@ func inspect(root string) (repositoryState, error) {
 		{"sequencer", "sequencer"},
 	}
 	for _, operation := range operationPaths {
-		path, pathErr := gitPath(root, "--git-path", operation.path)
+		path, pathErr := gitPath(ctx, root, "--git-path", operation.path)
 		if pathErr != nil {
 			return state, internal("cannot inspect Git operation state")
 		}
@@ -63,7 +64,7 @@ func inspect(root string) (repositoryState, error) {
 			return state, internal("cannot inspect Git operation state")
 		}
 	}
-	conflicts, err := gitBytes(root, "diff", "--name-only", "--diff-filter=U", "-z")
+	conflicts, err := gitBytes(ctx, root, "diff", "--name-only", "--diff-filter=U", "-z")
 	if err != nil {
 		return state, internal("cannot inspect Git conflicts")
 	}
@@ -73,9 +74,9 @@ func inspect(root string) (repositoryState, error) {
 	return state, nil
 }
 
-func gitBytes(root string, args ...string) ([]byte, error) {
+func gitBytes(ctx context.Context, root string, args ...string) ([]byte, error) {
 	commandArgs := append([]string{"-C", root}, args...)
-	command := exec.Command("git", commandArgs...)
+	command := exec.CommandContext(ctx, "git", commandArgs...)
 	command.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0", "LC_ALL=C")
 	var stdout bytes.Buffer
 	command.Stdout = &stdout
@@ -86,17 +87,17 @@ func gitBytes(root string, args ...string) ([]byte, error) {
 	return stdout.Bytes(), nil
 }
 
-func gitText(root string, args ...string) (string, error) {
-	value, err := gitBytes(root, args...)
+func gitText(ctx context.Context, root string, args ...string) (string, error) {
+	value, err := gitBytes(ctx, root, args...)
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSuffix(string(value), "\n"), nil
 }
 
-func gitPath(root string, args ...string) (string, error) {
+func gitPath(ctx context.Context, root string, args ...string) (string, error) {
 	revParseArgs := append([]string{"rev-parse"}, args...)
-	value, err := gitText(root, revParseArgs...)
+	value, err := gitText(ctx, root, revParseArgs...)
 	if err != nil {
 		return "", err
 	}

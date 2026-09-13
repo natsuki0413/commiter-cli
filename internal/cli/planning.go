@@ -29,7 +29,7 @@ var planFlow planFlowFunc = generateCommitPlan
 func generateCommitPlan(ctx context.Context, root string, snapshot gitstate.Snapshot, values config.Values, supplement string) (planning.Plan, error) {
 	recorder := runmetrics.FromContext(ctx)
 	started := time.Now()
-	results, sensitive, stats, err := analyzeForPlanningWithStats(root, snapshot)
+	results, sensitive, stats, err := analyzeForPlanningWithStatsContext(ctx, root, snapshot)
 	recorder.AddDuration(runmetrics.SyntaxAnalysis, time.Since(started))
 	if err != nil {
 		return planning.Plan{}, err
@@ -104,7 +104,7 @@ func supplementRenderer(base contextinput.Renderer, supplement string) contextin
 }
 
 func analyzeForPlanning(root string, snapshot gitstate.Snapshot) ([]syntax.ChangeResult, planning.SensitiveValues, error) {
-	results, sensitive, _, err := analyzeForPlanningWithStats(root, snapshot)
+	results, sensitive, _, err := analyzeForPlanningWithStatsContext(context.Background(), root, snapshot)
 	return results, sensitive, err
 }
 
@@ -116,15 +116,25 @@ type planningStats struct {
 }
 
 func analyzeForPlanningWithStats(root string, snapshot gitstate.Snapshot) ([]syntax.ChangeResult, planning.SensitiveValues, planningStats, error) {
+	return analyzeForPlanningWithStatsContext(context.Background(), root, snapshot)
+}
+
+func analyzeForPlanningWithStatsContext(ctx context.Context, root string, snapshot gitstate.Snapshot) ([]syntax.ChangeResult, planning.SensitiveValues, planningStats, error) {
 	results := make([]syntax.ChangeResult, 0, len(snapshot.Changes))
 	sensitiveInputs := make([][]byte, 0, len(snapshot.Changes)*2)
 	stats := planningStats{}
+	if err := ctx.Err(); err != nil {
+		return nil, planning.SensitiveValues{}, stats, err
+	}
 	for _, change := range snapshot.Changes {
-		content, rawDiff, hunks, err := planningInput(root, change)
+		if err := ctx.Err(); err != nil {
+			return nil, planning.SensitiveValues{}, stats, err
+		}
+		content, rawDiff, hunks, err := planningInputContext(ctx, root, change)
 		if err != nil {
 			return nil, planning.SensitiveValues{}, stats, err
 		}
-		result, err := syntax.AnalyzeChange(syntax.ChangeInput{Change: change, Content: content, RawDiff: rawDiff, Hunks: hunks})
+		result, err := syntax.AnalyzeChangeContext(ctx, syntax.ChangeInput{Change: change, Content: content, RawDiff: rawDiff, Hunks: hunks})
 		if err != nil {
 			return nil, planning.SensitiveValues{}, stats, err
 		}
@@ -149,8 +159,12 @@ func analyzeForPlanningWithStats(root string, snapshot gitstate.Snapshot) ([]syn
 }
 
 func planningInput(root string, change gitstate.Change) ([]byte, string, []syntax.Hunk, error) {
+	return planningInputContext(context.Background(), root, change)
+}
+
+func planningInputContext(ctx context.Context, root string, change gitstate.Change) ([]byte, string, []syntax.Hunk, error) {
 	paths := changePaths(change)
-	rawDiff, err := worktreeDiff(root, paths)
+	rawDiff, err := worktreeDiffContext(ctx, root, paths)
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("cannot read selected diff")
 	}
@@ -163,6 +177,9 @@ func planningInput(root string, change gitstate.Change) ([]byte, string, []synta
 	content, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(*change.NewPath)))
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("cannot read selected file")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, "", nil, err
 	}
 	if rawDiff == "" {
 		rawDiff = addedFileDiff(content)
@@ -186,9 +203,13 @@ func changePaths(change gitstate.Change) []string {
 }
 
 func worktreeDiff(root string, paths []string) (string, error) {
+	return worktreeDiffContext(context.Background(), root, paths)
+}
+
+func worktreeDiffContext(ctx context.Context, root string, paths []string) (string, error) {
 	args := []string{"-C", root, "diff", "--no-ext-diff", "--no-textconv", "--unified=0", "HEAD", "--"}
 	args = append(args, paths...)
-	command := exec.Command("git", args...)
+	command := exec.CommandContext(ctx, "git", args...)
 	command.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0", "GIT_LITERAL_PATHSPECS=1", "LC_ALL=C")
 	value, err := command.Output()
 	return string(value), err

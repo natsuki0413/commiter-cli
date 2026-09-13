@@ -1,12 +1,22 @@
 package gitstate
 
-import "sort"
+import (
+	"context"
+	"sort"
+)
 
 func Collect(root string, options Options) (snapshot Snapshot, err error) {
+	ctx := options.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return Snapshot{}, err
+	}
 	if options.Files == nil {
 		options.Files = osFiles{}
 	}
-	commonDir, err := gitPath(root, "--git-common-dir")
+	commonDir, err := gitPath(ctx, root, "--git-common-dir")
 	if err != nil {
 		return Snapshot{}, internal("cannot resolve common Git directory")
 	}
@@ -19,12 +29,12 @@ func Collect(root string, options Options) (snapshot Snapshot, err error) {
 			err = closeErr
 		}
 	}()
-	state, err := inspect(root)
+	state, err := inspect(ctx, root)
 	if err != nil {
 		return Snapshot{}, err
 	}
 
-	rawChanges, err := readStatus(root, options.Pathspecs)
+	rawChanges, err := readStatus(ctx, root, options.Pathspecs)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -33,6 +43,9 @@ func Collect(root string, options Options) (snapshot Snapshot, err error) {
 	candidateIndexes := make([]int, 0)
 	candidates := make([]Candidate, 0)
 	for _, change := range rawChanges {
+		if err := ctx.Err(); err != nil {
+			return Snapshot{}, err
+		}
 		include, err := selectedByGlobs(change, options.Include, options.Exclude)
 		if err != nil {
 			return Snapshot{}, err
@@ -64,6 +77,9 @@ func Collect(root string, options Options) (snapshot Snapshot, err error) {
 	}
 	approvedIndexes := make(map[int]bool, len(candidateIndexes))
 	for candidateOffset, selectedIndex := range candidateIndexes {
+		if err := ctx.Err(); err != nil {
+			return Snapshot{}, err
+		}
 		if approved {
 			approvedIndexes[selectedIndex] = true
 		} else {
@@ -74,6 +90,9 @@ func Collect(root string, options Options) (snapshot Snapshot, err error) {
 	filtered := make([]rawChange, 0, len(selected))
 	filteredSensitive := make([]bool, 0, len(selected))
 	for index, change := range selected {
+		if err := ctx.Err(); err != nil {
+			return Snapshot{}, err
+		}
 		isCandidate := containsIndex(candidateIndexes, index)
 		if isCandidate && !approvedIndexes[index] {
 			continue
@@ -91,11 +110,14 @@ func Collect(root string, options Options) (snapshot Snapshot, err error) {
 		Untracked: []string{},
 		Excluded:  excluded,
 	}
-	if snapshot.IndexIdentity, err = indexIdentity(root); err != nil {
+	if snapshot.IndexIdentity, err = indexIdentity(ctx, root); err != nil {
 		return Snapshot{}, err
 	}
 	for index, change := range filtered {
-		built, include, buildErr := buildChange(root, change, options.Files, filteredSensitive[index], state.objectFormat)
+		if err := ctx.Err(); err != nil {
+			return Snapshot{}, err
+		}
+		built, include, buildErr := buildChange(ctx, root, change, options.Files, filteredSensitive[index], state.objectFormat)
 		if buildErr != nil {
 			return Snapshot{}, buildErr
 		}
@@ -110,11 +132,11 @@ func Collect(root string, options Options) (snapshot Snapshot, err error) {
 	}
 	sort.Strings(snapshot.Untracked)
 	sort.Slice(snapshot.Excluded, func(i, j int) bool { return snapshot.Excluded[i].Path < snapshot.Excluded[j].Path })
-	finalState, err := inspect(root)
+	finalState, err := inspect(ctx, root)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	finalIndex, err := indexIdentity(root)
+	finalIndex, err := indexIdentity(ctx, root)
 	if err != nil {
 		return Snapshot{}, err
 	}

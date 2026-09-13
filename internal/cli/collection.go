@@ -44,8 +44,10 @@ func runCollection(opts options, root string, values config.Values, printer *out
 
 func runCollectionCycle(opts options, root string, values config.Values, reader *bufio.Reader, printer *output.Printer, repeatedMutation map[string]int, recorder *runmetrics.Recorder) (int, bool) {
 	started := time.Now()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
 	var approvalWait time.Duration
-	snapshot, err := collectSnapshot(root, values, opts.pathspecs, func(candidates []gitstate.Candidate) (bool, error) {
+	snapshot, err := collectSnapshot(ctx, root, values, opts.pathspecs, func(candidates []gitstate.Candidate) (bool, error) {
 		lines := []string{"Sensitive candidates require approval before reading:"}
 		for _, candidate := range candidates {
 			lines = append(lines, fmt.Sprintf("%s (%s)", candidate.Path, candidate.Reason))
@@ -55,13 +57,19 @@ func runCollectionCycle(opts options, root string, values config.Values, reader 
 			return false, err
 		}
 		waitStarted := time.Now()
-		approved := readYes(reader)
+		approved, _ := readYesContext(ctx, reader)
 		approvalWait += time.Since(waitStarted)
 		return approved, nil
 	})
 	recorder.AddDuration(runmetrics.GitPreprocessing, time.Since(started)-approvalWait)
 	if err != nil {
+		if ctx.Err() != nil {
+			return fail(printer, interruptedBeforeCommit()), false
+		}
 		return fail(printer, classifyCollectionError(err)), false
+	}
+	if ctx.Err() != nil {
+		return fail(printer, interruptedBeforeCommit()), false
 	}
 
 	if len(snapshot.Changes) == 0 {
@@ -80,17 +88,26 @@ func runCollectionCycle(opts options, root string, values config.Values, reader 
 	statePolicy := verificationStatePolicy(snapshot, values)
 	initialState, err := verification.CaptureRepositoryState(root, statePolicy)
 	if err != nil {
+		if ctx.Err() != nil {
+			return fail(printer, interruptedBeforeCommit()), false
+		}
 		return fail(printer, exitcode.New(exitcode.Safety, err.Error())), false
 	}
 	definition, err := verification.Resolve(root, values)
 	if err != nil {
+		if ctx.Err() != nil {
+			return fail(printer, interruptedBeforeCommit()), false
+		}
 		return fail(printer, exitcode.New(exitcode.Usage, err.Error())), false
 	}
 	pushTarget := interaction.ResolvePushTarget(root)
-	metricsContext := runmetrics.WithRecorder(context.Background(), recorder)
+	metricsContext := runmetrics.WithRecorder(ctx, recorder)
 	plan, err := planFlow(metricsContext, root, snapshot, values, "")
 	if err != nil {
-		return fail(printer, err), false
+		return fail(printer, classifyPlanningError(ctx, err)), false
+	}
+	if ctx.Err() != nil {
+		return fail(printer, interruptedBeforeCommit()), false
 	}
 	request := reviewRequest(snapshot, plan, definition, pushTarget)
 	if printer.JSON() {
@@ -110,8 +127,11 @@ func runCollectionCycle(opts options, root string, values config.Values, reader 
 	if values.CommitConfirm {
 		reviewer := interaction.Reviewer{In: reader, Printer: printer}
 		for {
-			decision, supplement, err := reviewer.Review(request)
+			decision, supplement, err := reviewer.ReviewContext(ctx, request)
 			if err != nil {
+				if ctx.Err() != nil {
+					return fail(printer, interruptedBeforeCommit()), false
+				}
 				return fail(printer, exitcode.New(exitcode.Internal, "cannot review commit plan")), false
 			}
 			switch decision {
@@ -125,7 +145,10 @@ func runCollectionCycle(opts options, root string, values config.Values, reader 
 			case interaction.Regenerate:
 				plan, err = planFlow(metricsContext, root, snapshot, values, supplement)
 				if err != nil {
-					return fail(printer, err), false
+					return fail(printer, classifyPlanningError(ctx, err)), false
+				}
+				if ctx.Err() != nil {
+					return fail(printer, interruptedBeforeCommit()), false
 				}
 				request = reviewRequest(snapshot, plan, definition, pushTarget)
 			}
@@ -140,12 +163,13 @@ func runCollectionCycle(opts options, root string, values config.Values, reader 
 	}
 
 approved:
-	if err := authorizeVerificationDefinition(root, configStateDir(root), definition, reader, printer); err != nil {
+	if err := authorizeVerificationDefinitionContext(ctx, root, configStateDir(root), definition, reader, printer); err != nil {
+		if ctx.Err() != nil {
+			return fail(printer, interruptedBeforeCommit()), false
+		}
 		return fail(printer, err), false
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
 	var runResult verification.RunResult
 	var runErr error
 	if definition != nil && len(definition.Commands) > 0 {
@@ -176,7 +200,7 @@ approved:
 	}
 
 	afterState, stateErr := verification.CaptureRepositoryState(root, statePolicy)
-	current, collectErr := revalidateSnapshot(root, values, opts.pathspecs, snapshot)
+	current, collectErr := revalidateSnapshot(ctx, root, values, opts.pathspecs, snapshot)
 	if ctx.Err() != nil {
 		if err := initialState.RestoreIndex(); err != nil {
 			return fail(printer, exitcode.New(exitcode.Commit, "verification interrupted and index restoration is unknown")), false
@@ -225,7 +249,11 @@ approved:
 		if err := printer.PromptLines(lines...); err != nil {
 			return fail(printer, exitcode.New(exitcode.Internal, "cannot write output")), false
 		}
-		if readYes(reader) {
+		approved, err := readYesContext(ctx, reader)
+		if err != nil {
+			return fail(printer, interruptedAfterVerificationMutation()), false
+		}
+		if approved {
 			return exitcode.Success, true
 		}
 		return fail(printer, exitcode.New(exitcode.Safety, "changed state was not re-analyzed")), false
@@ -335,8 +363,9 @@ func readYesContext(ctx context.Context, reader *bufio.Reader) (bool, error) {
 	}
 }
 
-func collectSnapshot(root string, values config.Values, pathspecs []string, approve func([]gitstate.Candidate) (bool, error)) (gitstate.Snapshot, error) {
+func collectSnapshot(ctx context.Context, root string, values config.Values, pathspecs []string, approve func([]gitstate.Candidate) (bool, error)) (gitstate.Snapshot, error) {
 	return gitstate.Collect(root, gitstate.Options{
+		Context:                    ctx,
 		Pathspecs:                  pathspecs,
 		Include:                    values.Include,
 		Exclude:                    values.Exclude,
@@ -359,7 +388,7 @@ func readYes(reader *bufio.Reader) bool {
 	return answer == "y" || answer == "Y" || strings.EqualFold(answer, "yes")
 }
 
-func revalidateSnapshot(root string, values config.Values, pathspecs []string, original gitstate.Snapshot) (gitstate.Snapshot, error) {
+func revalidateSnapshot(ctx context.Context, root string, values config.Values, pathspecs []string, original gitstate.Snapshot) (gitstate.Snapshot, error) {
 	approved := map[string]bool{}
 	for _, change := range original.Changes {
 		if change.Sensitive {
@@ -368,7 +397,7 @@ func revalidateSnapshot(root string, values config.Values, pathspecs []string, o
 			}
 		}
 	}
-	return collectSnapshot(root, values, pathspecs, func(candidates []gitstate.Candidate) (bool, error) {
+	return collectSnapshot(ctx, root, values, pathspecs, func(candidates []gitstate.Candidate) (bool, error) {
 		for _, candidate := range candidates {
 			if !approved[candidate.Path] {
 				return false, nil
@@ -493,6 +522,21 @@ func classifyCommitError(err error) error {
 		return exitcode.New(exitcode.Interrupted, failure.Message)
 	}
 	return exitcode.New(exitcode.Commit, failure.Message)
+}
+
+func classifyPlanningError(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return interruptedBeforeCommit()
+	}
+	return err
+}
+
+func interruptedBeforeCommit() error {
+	return exitcode.New(exitcode.Interrupted, "interrupted before commit; Git state was not changed")
+}
+
+func interruptedAfterVerificationMutation() error {
+	return exitcode.New(exitcode.Interrupted, "interrupted before commit; initial index was restored; verification changes remain in the working tree")
 }
 
 func uniqueStrings(values []string) []string {

@@ -1,6 +1,9 @@
 package gitstate
 
-import "errors"
+import (
+	"context"
+	"errors"
+)
 
 const (
 	HashSchemaVersion  = 1
@@ -69,6 +72,7 @@ type Snapshot struct {
 }
 
 type Options struct {
+	Context                    context.Context
 	Pathspecs                  []string
 	Include                    []string
 	Exclude                    []string

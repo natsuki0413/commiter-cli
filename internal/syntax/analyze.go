@@ -2,6 +2,7 @@
 package syntax
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -93,35 +94,59 @@ var factories = map[string]languageFactory{
 // Analyze parses text that the caller has already approved for local analysis.
 // Unsupported or invalid text falls back to its raw diff at the Change boundary.
 func Analyze(input Input) Result {
+	result, _ := AnalyzeContext(context.Background(), input)
+	return result
+}
+
+// AnalyzeContext is Analyze with cancellation support for parsing and tree traversal.
+func AnalyzeContext(ctx context.Context, input Input) (Result, error) {
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
 	factory, ok := factories[strings.ToLower(input.Language)]
 	if !ok {
-		return Result{Mode: ModeRawDiff}
+		return Result{Mode: ModeRawDiff}, nil
 	}
 	parser := treesitter.NewParser()
 	defer parser.Close()
 	if err := parser.SetLanguage(treesitter.NewLanguage(factory())); err != nil {
-		return Result{Mode: ModeRawDiff}
+		return Result{Mode: ModeRawDiff}, nil
 	}
-	tree := parser.Parse(input.Content, nil)
+	tree := parser.ParseWithOptions(func(offset int, _ treesitter.Point) []byte {
+		if offset < len(input.Content) {
+			return input.Content[offset:]
+		}
+		return []byte{}
+	}, nil, &treesitter.ParseOptions{ProgressCallback: func(treesitter.ParseState) bool {
+		return ctx.Err() != nil
+	}})
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
 	if tree == nil {
-		return Result{Mode: ModeRawDiff}
+		return Result{Mode: ModeRawDiff}, nil
 	}
 	defer tree.Close()
 	root := tree.RootNode()
 	if root.HasError() {
-		return Result{Mode: ModeRawDiff}
+		return Result{Mode: ModeRawDiff}, nil
 	}
 	lines := lineOffsets(input.Content)
 	result := Result{Mode: ModeStructural}
 	for _, hunk := range input.Hunks {
+		if err := ctx.Err(); err != nil {
+			return Result{}, err
+		}
 		start, end, ok := hunkBytes(hunk, lines, len(input.Content))
 		if !ok {
-			return Result{Mode: ModeRawDiff}
+			return Result{Mode: ModeRawDiff}, nil
 		}
 		if start == end {
-			return Result{Mode: ModeRawDiff}
+			return Result{Mode: ModeRawDiff}, nil
 		}
-		collect(root, input.Content, start, end, nil, &result.Evidence)
+		if !collect(ctx, root, input.Content, start, end, nil, &result.Evidence) {
+			return Result{}, ctx.Err()
+		}
 	}
 	sort.Slice(result.Evidence, func(i, j int) bool {
 		a, b := result.Evidence[i], result.Evidence[j]
@@ -138,14 +163,22 @@ func Analyze(input Input) Result {
 	})
 	result.Evidence = unique(result.Evidence)
 	if len(result.Evidence) == 0 {
-		return Result{Mode: ModeRawDiff}
+		return Result{Mode: ModeRawDiff}, nil
 	}
-	return result
+	return result, nil
 }
 
 // AnalyzeChange preserves the Issue #3 Git metadata and makes raw-diff versus
 // metadata-only fallback impossible to confuse at the next pipeline boundary.
 func AnalyzeChange(input ChangeInput) (ChangeResult, error) {
+	return AnalyzeChangeContext(context.Background(), input)
+}
+
+// AnalyzeChangeContext is AnalyzeChange with cancellation support.
+func AnalyzeChangeContext(ctx context.Context, input ChangeInput) (ChangeResult, error) {
+	if err := ctx.Err(); err != nil {
+		return ChangeResult{}, err
+	}
 	if input.Change.Binary || input.Change.Opaque {
 		return ChangeResult{Change: input.Change, Mode: ModeMetadataOnly}, nil
 	}
@@ -162,11 +195,14 @@ func AnalyzeChange(input ChangeInput) (ChangeResult, error) {
 	if hex.EncodeToString(digest[:]) != *input.Change.WorktreeID {
 		return ChangeResult{}, ErrStaleContent
 	}
-	analysis := Analyze(Input{
+	analysis, err := AnalyzeContext(ctx, Input{
 		Language: input.Change.Language,
 		Content:  input.Content,
 		Hunks:    input.Hunks,
 	})
+	if err != nil {
+		return ChangeResult{}, err
+	}
 	result := ChangeResult{Change: input.Change, Mode: analysis.Mode, Evidence: analysis.Evidence}
 	if analysis.Mode == ModeRawDiff {
 		result.RawDiff = input.RawDiff
@@ -199,9 +235,12 @@ func hunkBytes(h Hunk, lines []int, size int) (uint, uint, bool) {
 	return uint(start), uint(end), true
 }
 
-func collect(node *treesitter.Node, source []byte, start, end uint, declaration *treesitter.Node, out *[]Evidence) {
+func collect(ctx context.Context, node *treesitter.Node, source []byte, start, end uint, declaration *treesitter.Node, out *[]Evidence) bool {
+	if ctx.Err() != nil {
+		return false
+	}
 	if node == nil || node.EndByte() <= start || node.StartByte() >= end {
-		return
+		return true
 	}
 	kind := node.Kind()
 	current := declaration
@@ -220,8 +259,11 @@ func collect(node *treesitter.Node, source []byte, start, end uint, declaration 
 		*out = append(*out, e)
 	}
 	for i := uint(0); i < node.NamedChildCount(); i++ {
-		collect(node.NamedChild(i), source, start, end, current, out)
+		if !collect(ctx, node.NamedChild(i), source, start, end, current, out) {
+			return false
+		}
 	}
+	return true
 }
 
 func isDeclaration(kind string) bool {

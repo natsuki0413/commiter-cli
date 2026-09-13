@@ -1,6 +1,7 @@
 package gitstate
 
 import (
+	"context"
 	"fmt"
 	"path"
 	"strings"
@@ -20,13 +21,13 @@ type rawChange struct {
 	untracked    bool
 }
 
-func readStatus(root string, pathspecs []string) ([]rawChange, error) {
+func readStatus(ctx context.Context, root string, pathspecs []string) ([]rawChange, error) {
 	args := []string{"status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignored=no"}
 	if len(pathspecs) > 0 {
 		args = append(args, "--")
 		args = append(args, pathspecs...)
 	}
-	data, err := gitBytes(root, args...)
+	data, err := gitBytes(ctx, root, args...)
 	if err != nil {
 		if len(pathspecs) > 0 {
 			return nil, usage("invalid Git pathspec")
@@ -36,6 +37,9 @@ func readStatus(root string, pathspecs []string) ([]rawChange, error) {
 	records := splitNUL(data)
 	changes := make([]rawChange, 0, len(records))
 	for i := 0; i < len(records); i++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		record := records[i]
 		if record == "" {
 			continue
