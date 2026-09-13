@@ -229,6 +229,17 @@ func TestGeneratorRepairsOnceAndSharesTransportRetryBudget(t *testing.T) {
 	}
 }
 
+func TestGeneratorPassesPreparedContextToInitialAndRepair(t *testing.T) {
+	client := &optionsScriptedChat{scriptedChat: scriptedChat{steps: []chatStep{{content: "invalid"}, {content: validPlan()}}}}
+	prepared := preparedInput(t, English)
+	if _, err := (Generator{Client: client}).Generate(context.Background(), prepared, English, SensitiveValues{}); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(client.contexts, []int{contextinput.Context8K, contextinput.Context8K}) {
+		t.Fatalf("contexts = %v", client.contexts)
+	}
+}
+
 func TestGeneratorStopsAtThreeCallsAndNeverRepairsTwice(t *testing.T) {
 	invalid := `{"schema_version":1,"commits":[]}`
 	for name, test := range map[string]struct {
@@ -310,6 +321,16 @@ type chatStep struct {
 type scriptedChat struct {
 	steps    []chatStep
 	messages [][]ollama.Message
+}
+
+type optionsScriptedChat struct {
+	scriptedChat
+	contexts []int
+}
+
+func (client *optionsScriptedChat) ChatWithOptions(ctx context.Context, messages []ollama.Message, schema json.RawMessage, options ollama.ChatOptions) (ollama.ChatResponse, error) {
+	client.contexts = append(client.contexts, options.ContextTokens)
+	return client.Chat(ctx, messages, schema)
 }
 
 func (client *scriptedChat) Chat(_ context.Context, messages []ollama.Message, schema json.RawMessage) (ollama.ChatResponse, error) {

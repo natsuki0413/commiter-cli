@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -102,6 +103,33 @@ func TestChatFixesSafetyFieldsAndReturnsContent(t *testing.T) {
 	format, ok := received["format"].(map[string]any)
 	if !ok || format["type"] != "object" {
 		t.Fatalf("format = %#v", received["format"])
+	}
+}
+
+func TestChatWithOptionsSendsSelectedContext(t *testing.T) {
+	for _, contextTokens := range []int{8192, 16384, 32768} {
+		t.Run(fmt.Sprint(contextTokens), func(t *testing.T) {
+			var received map[string]any
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				if err := json.NewDecoder(request.Body).Decode(&received); err != nil {
+					t.Fatal(err)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"model":"model","message":{"content":"{}"},"done":true}`)
+			}))
+			defer server.Close()
+			client, err := New(config.Values{Endpoint: server.URL, Model: "model"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := client.ChatWithOptions(context.Background(), []Message{{Role: "user", Content: "prompt"}}, json.RawMessage(`{"type":"object"}`), ChatOptions{ContextTokens: contextTokens}); err != nil {
+				t.Fatal(err)
+			}
+			options, ok := received["options"].(map[string]any)
+			if !ok || options["num_ctx"] != float64(contextTokens) {
+				t.Fatalf("options = %#v", received["options"])
+			}
+		})
 	}
 }
 

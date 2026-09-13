@@ -14,6 +14,10 @@ type ChatClient interface {
 	Chat(context.Context, []ollama.Message, json.RawMessage) (ollama.ChatResponse, error)
 }
 
+type optionsChatClient interface {
+	ChatWithOptions(context.Context, []ollama.Message, json.RawMessage, ollama.ChatOptions) (ollama.ChatResponse, error)
+}
+
 type Generator struct{ Client ChatClient }
 
 func (generator Generator) Generate(ctx context.Context, prepared contextinput.Prepared, language Language, sensitive SensitiveValues) (Result, error) {
@@ -33,7 +37,13 @@ func (generator Generator) Generate(ctx context.Context, prepared contextinput.P
 	request := func(messages []ollama.Message) (ollama.ChatResponse, error) {
 		for {
 			calls++
-			response, callErr := generator.Client.Chat(ctx, messages, schema)
+			var response ollama.ChatResponse
+			var callErr error
+			if client, ok := generator.Client.(optionsChatClient); ok {
+				response, callErr = client.ChatWithOptions(ctx, messages, schema, ollama.ChatOptions{ContextTokens: prepared.Budget.ContextTokens})
+			} else {
+				response, callErr = generator.Client.Chat(ctx, messages, schema)
+			}
 			if callErr == nil {
 				telemetry.add(response)
 				return response, nil

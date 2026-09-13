@@ -40,6 +40,11 @@ type ChatResponse struct {
 	EvalDuration       int64
 }
 
+// ChatOptions controls optional Ollama chat settings selected by the caller.
+type ChatOptions struct {
+	ContextTokens int
+}
+
 type CapabilityResult struct {
 	StructuredOutput bool
 	ThinkingDisabled bool
@@ -236,6 +241,10 @@ func modelMatches(configured, installed string) bool {
 }
 
 func (c *Client) Chat(ctx context.Context, messages []Message, schema json.RawMessage) (ChatResponse, error) {
+	return c.ChatWithOptions(ctx, messages, schema, ChatOptions{})
+}
+
+func (c *Client) ChatWithOptions(ctx context.Context, messages []Message, schema json.RawMessage, options ChatOptions) (ChatResponse, error) {
 	if len(messages) == 0 || !validSchema(schema) {
 		return ChatResponse{}, llmError("Ollama chat requires messages and a JSON Schema")
 	}
@@ -246,9 +255,17 @@ func (c *Client) Chat(ctx context.Context, messages []Message, schema json.RawMe
 		Think     bool            `json:"think"`
 		Stream    bool            `json:"stream"`
 		KeepAlive int             `json:"keep_alive"`
+		Options   *struct {
+			NumCtx int `json:"num_ctx"`
+		} `json:"options,omitempty"`
 	}{
 		Model: c.model, Messages: messages, Format: schema,
 		Think: false, Stream: false, KeepAlive: 0,
+	}
+	if options.ContextTokens > 0 {
+		payload.Options = &struct {
+			NumCtx int `json:"num_ctx"`
+		}{NumCtx: options.ContextTokens}
 	}
 
 	var response struct {
