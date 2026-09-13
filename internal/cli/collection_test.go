@@ -496,6 +496,74 @@ func TestMainStopsOnVerificationMutationAndRestoresInitialIndex(t *testing.T) {
 	}
 }
 
+func TestMainInterruptsWhileWaitingForVerificationMutationReanalysis(t *testing.T) {
+	repo := cliRepository(t)
+	cliWrite(t, repo, "a.txt", "base\n", 0o644)
+	cliGit(t, repo, "add", "a.txt")
+	cliGit(t, repo, "commit", "-m", "base")
+	cliWrite(t, repo, "a.txt", "planned\n", 0o644)
+	beforeHead := cliGitOutput(t, repo, "rev-parse", "HEAD")
+	chdir(t, repo)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	stubPlanFlow(t, nil)
+	input := &blockingReader{started: make(chan struct{}), release: make(chan struct{})}
+	oldInput := mainInput
+	mainInput = input
+	t.Cleanup(func() { mainInput = oldInput })
+	commitCalled := false
+	stubPostApprovalFlows(t,
+		func(context.Context, string, *verification.Definition, time.Duration, verification.StatePolicy) (verification.RunResult, error) {
+			cliWrite(t, repo, "a.txt", "verification mutation\n", 0o644)
+			cliGit(t, repo, "add", "a.txt")
+			return verification.RunResult{Commands: []verification.CommandResult{{Name: "fixture"}}}, nil
+		},
+		func(commitexec.Options) (commitexec.Result, error) {
+			commitCalled = true
+			return commitexec.Result{}, nil
+		},
+	)
+
+	type runResult struct {
+		code           int
+		stdout, stderr string
+	}
+	done := make(chan runResult, 1)
+	go func() {
+		var stdout, stderr bytes.Buffer
+		code := Run([]string{"--no-confirm-commit", "--no-push"}, &stdout, &stderr)
+		done <- runResult{code: code, stdout: stdout.String(), stderr: stderr.String()}
+	}()
+	<-input.started
+	if err := syscall.Kill(syscall.Getpid(), syscall.SIGINT); err != nil {
+		t.Fatalf("send SIGINT: %v", err)
+	}
+
+	select {
+	case result := <-done:
+		close(input.release)
+		if result.code != exitcode.Interrupted || commitCalled {
+			t.Fatalf("code=%d commitCalled=%t stdout=%q stderr=%q", result.code, commitCalled, result.stdout, result.stderr)
+		}
+		if !strings.Contains(result.stdout, "Re-analyze changed state?") || !strings.Contains(result.stderr, "before commit") {
+			t.Fatalf("stdout=%q stderr=%q", result.stdout, result.stderr)
+		}
+	case <-time.After(time.Second):
+		close(input.release)
+		t.Fatal("re-analysis confirmation did not stop after SIGINT")
+	}
+	if got := cliGitOutput(t, repo, "rev-parse", "HEAD"); got != beforeHead {
+		t.Fatalf("HEAD changed after interruption: before=%s after=%s", beforeHead, got)
+	}
+	if cached := cliGitOutput(t, repo, "diff", "--cached", "--name-only"); cached != "" {
+		t.Fatalf("index was not restored: %q", cached)
+	}
+	contents, err := os.ReadFile(filepath.Join(repo, "a.txt"))
+	if err != nil || string(contents) != "verification mutation\n" {
+		t.Fatalf("working tree was rolled back: %q, %v", contents, err)
+	}
+}
+
 func TestMainReanalyzesCurrentStateAfterMutationApproval(t *testing.T) {
 	repo := cliRepository(t)
 	cliWrite(t, repo, "a.txt", "base\n", 0o644)

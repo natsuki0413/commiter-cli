@@ -249,7 +249,11 @@ approved:
 		if err := printer.PromptLines(lines...); err != nil {
 			return fail(printer, exitcode.New(exitcode.Internal, "cannot write output")), false
 		}
-		if readYes(reader) {
+		approved, err := readYesContext(ctx, reader)
+		if err != nil {
+			return fail(printer, interruptedBeforeCommit()), false
+		}
+		if approved {
 			return exitcode.Success, true
 		}
 		return fail(printer, exitcode.New(exitcode.Safety, "changed state was not re-analyzed")), false
