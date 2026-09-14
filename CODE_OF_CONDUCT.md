@@ -1,5 +1,7 @@
 # Contributor Covenant Code of Conduct
 
+English | [日本語](CODE_OF_CONDUCT_ja.md)
+
 ## Our Pledge
 
 We as members, contributors, and leaders pledge to make participation in our
