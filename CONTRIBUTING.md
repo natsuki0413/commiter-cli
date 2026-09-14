@@ -13,9 +13,36 @@ Read the software requirements specification before changing behavior:
 - [Software Requirements Specification (English)](SOFTWARE_REQUIREMENTS_SPECIFICATION_en.md)
 - [ソフトウェア要求仕様書 (日本語)](SOFTWARE_REQUIREMENTS_SPECIFICATION.md)
 
+Before opening an issue or pull request, review existing issues and the SRS. If a change needs a substantial specification update or a design decision, discuss it in an issue first.
+
 For v1, the primary target is macOS 14 or later on Apple Silicon. The CLI is implemented primarily in Go and uses system Git and Ollama at runtime.
 
 If a change alters behavior described by an FR, SR, NFR, or AC requirement, update the affected specification text and acceptance criteria in the same pull request. Keep the English and Japanese SRS versions aligned.
+
+## Issues
+
+### Issue labels
+
+Apply one primary type label in principle.
+
+- `enhancement`: new features, implementation, or improvements
+- `bug`: bug fixes
+- `documentation`: documentation additions or changes
+
+Add the following secondary labels only when needed, in addition to the primary type.
+
+- `good first issue`: issues that first-time contributors can take on
+- `help wanted`: issues seeking help from external contributors
+
+If the primary type is unclear, do not force a label. Create new labels or make substantial changes to existing labels only after confirming the policy in an issue.
+
+### Issue templates
+
+- Feature / Enhancement: propose a new feature or improvement
+- Bug report: report a defect
+- Documentation: add or fix documentation
+
+Implementation issues generated from the SRS should include the related requirements, dependencies, success and failure conditions, implementation approach, and verification conditions in the body. Decision, Design, and Verification issues should include content that matches their purpose and expected outcome. For ordinary issue reports, fill in the template fields as specifically as you can.
 
 ## Development Setup
 
@@ -46,7 +73,7 @@ Do not commit generated binaries or unrelated local files.
 
 ## Making Changes
 
-Create a focused branch from the latest `main` and keep each pull request limited to one coherent purpose.
+Create a focused branch from the latest `main` and keep each pull request limited to one coherent purpose. In principle, one pull request should correspond to one issue.
 
 Prefer small changes that fit the existing package boundaries. Avoid unrelated refactors, formatting-only churn, or dependency additions that are not needed for the requested behavior.
 
@@ -106,7 +133,8 @@ A pull request should:
 - include relevant tests and documentation updates;
 - state the validation commands that were run;
 - call out security or Git-state implications when applicable;
-- link the relevant issue when one exists.
+- reference the related issue when one exists;
+- confirm that the issue and SRS remain consistent if review changes the specification.
 
 When the pull request fully resolves an issue, include an automatic-closing keyword such as:
 
@@ -131,4 +159,6 @@ Keep each commit internally coherent and avoid mixing unrelated changes.
 
 ## License and Conduct
 
-By contributing, follow the repository's currently published project policies and GitHub's platform rules. If the repository adds a dedicated license, code of conduct, or security policy, those documents take precedence for their respective topics.
+By contributing, you agree that your contributions will be licensed under the [MIT License](LICENSE) that applies to this repository.
+
+All participants must follow the [Code of Conduct](CODE_OF_CONDUCT.md). Security vulnerabilities must be reported according to the [Security Policy](SECURITY.md), not through a public issue or discussion.
