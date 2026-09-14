@@ -323,20 +323,6 @@ func TestGeneratorIncludesFormatSchemaInInitialSystemMessage(t *testing.T) {
 	}
 }
 
-func TestGeneratorFailsClosedWhenSystemSchemaExceedsSelectedContext(t *testing.T) {
-	client := &scriptedChat{steps: []chatStep{{content: validPlan()}}}
-	prepared := preparedInput(t, English)
-	schema, err := Schema([]string{"F001", "F002"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	prepared.Budget.EstimatedTokens = prepared.Budget.ContextTokens - len(schemaInstructionPrefix) - len(schema) + 1
-	result, err := (Generator{Client: client}).Generate(context.Background(), prepared, English, SensitiveValues{})
-	if exitcode.Code(err) != exitcode.LLM || result.Calls != 0 || len(client.messages) != 0 {
-		t.Fatalf("result=%#v error=%v calls=%d", result, err, len(client.messages))
-	}
-}
-
 func TestGeneratorStopsAtThreeCallsAndNeverRepairsTwice(t *testing.T) {
 	invalid := `{"schema_version":1,"commits":[]}`
 	for name, test := range map[string]struct {

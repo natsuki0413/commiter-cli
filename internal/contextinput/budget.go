@@ -18,8 +18,9 @@ const (
 var ErrTooLarge = errors.New("planning input exceeds the allowed context")
 
 type BudgetConfig struct {
-	Context          string
-	MaxContextTokens int
+	Context             string
+	MaxContextTokens    int
+	PromptOverheadBytes int
 }
 
 type Budget struct {
@@ -36,21 +37,25 @@ func SelectContext(prompt []byte, fileCount int, config BudgetConfig) (Budget, e
 	if fileCount < 0 {
 		return Budget{}, fmt.Errorf("file count must not be negative")
 	}
+	if config.PromptOverheadBytes < 0 {
+		return Budget{}, fmt.Errorf("prompt overhead must not be negative")
+	}
 	output := MinimumOutputSpace
 	if perFile := OutputPerFile * fileCount; perFile > output {
 		output = perFile
 	}
-	estimated := len(prompt) + TemplateReserve + output
+	promptBytes := len(prompt) + config.PromptOverheadBytes
+	estimated := promptBytes + TemplateReserve + output
 	limits, err := allowedContexts(config)
 	if err != nil {
 		return Budget{}, err
 	}
 	for _, limit := range limits {
 		if estimated <= limit {
-			return newBudget(limit, estimated, len(prompt), output), nil
+			return newBudget(limit, estimated, promptBytes, output), nil
 		}
 	}
-	return newBudget(limits[len(limits)-1], estimated, len(prompt), output), ErrTooLarge
+	return newBudget(limits[len(limits)-1], estimated, promptBytes, output), ErrTooLarge
 }
 
 func allowedContexts(config BudgetConfig) ([]int, error) {

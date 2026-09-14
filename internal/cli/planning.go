@@ -39,12 +39,22 @@ func generateCommitPlan(ctx context.Context, root string, snapshot gitstate.Snap
 	if err != nil {
 		return planning.Plan{}, err
 	}
+	fileIDs := make([]string, len(document.Files))
+	for index, file := range document.Files {
+		fileIDs[index] = file.ID
+	}
+	systemMessage, err := planning.InitialSystemMessage(fileIDs)
+	if err != nil {
+		return planning.Plan{}, err
+	}
 	language := planning.Language(values.Language)
 	renderer := planning.Renderer(language)
 	if supplement != "" {
 		renderer = supplementRenderer(renderer, supplement)
 	}
-	prepared, err := contextinput.Prepare(ctx, document, contextinput.BudgetConfig{Context: values.Context, MaxContextTokens: values.MaxTokens}, renderer, nil)
+	prepared, err := contextinput.Prepare(ctx, document, contextinput.BudgetConfig{
+		Context: values.Context, MaxContextTokens: values.MaxTokens, PromptOverheadBytes: len(systemMessage),
+	}, renderer, nil)
 	recordSummarization(recorder, prepared)
 	if err != nil {
 		return planning.Plan{}, err

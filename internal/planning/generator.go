@@ -25,6 +25,14 @@ const planningSystemInstruction = "Generate only the requested JSON commit plan.
 
 const schemaInstructionPrefix = " The required JSON Schema is: "
 
+func InitialSystemMessage(fileIDs []string) (string, error) {
+	schema, err := Schema(fileIDs)
+	if err != nil {
+		return "", err
+	}
+	return planningSystemInstruction + schemaInstructionPrefix + string(schema), nil
+}
+
 func (generator Generator) Generate(ctx context.Context, prepared contextinput.Prepared, language Language, sensitive SensitiveValues) (Result, error) {
 	if generator.Client == nil {
 		return Result{}, errors.New("planning chat client is required")
@@ -37,9 +45,9 @@ func (generator Generator) Generate(ctx context.Context, prepared contextinput.P
 	if err != nil {
 		return Result{}, err
 	}
-	systemMessage := planningSystemInstruction + schemaInstructionPrefix + string(schema)
-	if prepared.Budget.EstimatedTokens+len(schemaInstructionPrefix)+len(schema) > prepared.Budget.ContextTokens {
-		return generationFailure(0, Telemetry{}, nil)
+	systemMessage, err := InitialSystemMessage(fileIDs)
+	if err != nil {
+		return Result{}, err
 	}
 	calls, retryAvailable := 0, true
 	telemetry := Telemetry{}
