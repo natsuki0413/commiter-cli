@@ -42,6 +42,13 @@ func TestRendererBuildsDeterministicUntrustedDataEnvelope(t *testing.T) {
 		if constraints.Language != Language(language) || !reflect.DeepEqual(constraints.RequiredFileIDs, []string{"F001", "F002"}) || !strings.Contains(envelope.TrustBoundary, "untrusted") {
 			t.Fatalf("envelope=%s", encoded)
 		}
+		wanted := "English"
+		if language == "ja" {
+			wanted = "Japanese"
+		}
+		if !strings.Contains(constraints.Summary, wanted) {
+			t.Fatalf("summary constraint omitted %s: %s", wanted, constraints.Summary)
+		}
 	}
 	enSchema, err := Schema([]string{"F001", "F002"})
 	if err != nil {
@@ -74,12 +81,51 @@ func TestSchemaBoundsCommitAndFileIDArraysByRequiredFileCount(t *testing.T) {
 
 func TestValidateAcceptsLegalGroupingWithoutReordering(t *testing.T) {
 	candidate := []byte(`{"schema_version":1,"commits":[{"type":"test","scope":"planner","breaking":false,"summary":"cover validation","file_ids":["F002"]},{"type":"feat","scope":"planner","breaking":true,"summary":"generate plans","file_ids":["F001"]}]}`)
-	plan, violations := Validate(candidate, []string{"F001", "F002"}, SensitiveValues{})
+	plan, violations := Validate(candidate, []string{"F001", "F002"}, SensitiveValues{}, English)
 	if len(violations) != 0 {
 		t.Fatalf("violations=%v", violations)
 	}
 	if plan.Commits[0].FileIDs[0] != "F002" || plan.Commits[1].FileIDs[0] != "F001" || plan.Commits[1].Subject() != "feat(planner)!: generate plans" {
 		t.Fatalf("plan was rewritten: %#v", plan)
+	}
+}
+
+func TestValidateAcceptsMatchingSummaryLanguages(t *testing.T) {
+	tests := map[string]struct {
+		language Language
+		summary  string
+	}{
+		"english":                   {English, "cover validation"},
+		"japanese":                  {Japanese, "コミット計画を生成する"},
+		"japanese with latin terms": {Japanese, "CLIのJSON schemaを更新する"},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			candidate := []byte(`{"schema_version":1,"commits":[{"type":"feat","scope":"planner","breaking":false,"summary":"` + test.summary + `","file_ids":["F001","F002"]}]}`)
+			plan, violations := Validate(candidate, []string{"F001", "F002"}, SensitiveValues{}, test.language)
+			if len(violations) != 0 || plan.Commits[0].Summary != test.summary {
+				t.Fatalf("plan=%#v violations=%v", plan, violations)
+			}
+		})
+	}
+}
+
+func TestValidateRejectsMismatchedSummaryLanguage(t *testing.T) {
+	tests := map[string]struct {
+		language Language
+		summary  string
+	}{
+		"japanese requested english only": {Japanese, "cover validation"},
+		"english requested japanese":      {English, "コミット計画を生成する"},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			candidate := []byte(`{"schema_version":1,"commits":[{"type":"feat","scope":"planner","breaking":false,"summary":"` + test.summary + `","file_ids":["F001","F002"]}]}`)
+			_, violations := Validate(candidate, []string{"F001", "F002"}, SensitiveValues{}, test.language)
+			if !containsViolation(violations, InvalidSummaryLanguage) {
+				t.Fatalf("violations=%v", violations)
+			}
+		})
 	}
 }
 
@@ -101,7 +147,7 @@ func TestValidateRejectsEverySchemaAndAssignmentClass(t *testing.T) {
 	}
 	for name, candidate := range tests {
 		t.Run(name, func(t *testing.T) {
-			if _, violations := Validate([]byte(candidate), []string{"F001", "F002"}, SensitiveValues{}); len(violations) == 0 {
+			if _, violations := Validate([]byte(candidate), []string{"F001", "F002"}, SensitiveValues{}, English); len(violations) == 0 {
 				t.Fatal("invalid candidate was accepted")
 			}
 		})
@@ -114,7 +160,7 @@ func TestValidateRequiresBooleanBreaking(t *testing.T) {
 		"null":    `{"schema_version":1,"commits":[{"type":"fix","scope":"x","breaking":null,"summary":"s","file_ids":["F001","F002"]}]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, violations := Validate([]byte(candidate), []string{"F001", "F002"}, SensitiveValues{})
+			_, violations := Validate([]byte(candidate), []string{"F001", "F002"}, SensitiveValues{}, English)
 			if !containsViolation(violations, InvalidSchema) {
 				t.Fatalf("violations=%v", violations)
 			}
@@ -125,7 +171,7 @@ func TestValidateRequiresBooleanBreaking(t *testing.T) {
 func TestValidateRejectsSensitiveValueAfterJSONUnescaping(t *testing.T) {
 	sensitive := ExtractSensitiveValues([]byte(`token = "secret123"`))
 	candidate := []byte(`{"schema_version":1,"commits":[{"type":"fix","scope":"planner","breaking":false,"summary":"\u0073ecret123","file_ids":["F001","F002"]}]}`)
-	_, violations := Validate(candidate, []string{"F001", "F002"}, sensitive)
+	_, violations := Validate(candidate, []string{"F001", "F002"}, sensitive, English)
 	if !containsViolation(violations, SensitiveOutput) {
 		t.Fatalf("violations=%v", violations)
 	}
@@ -141,7 +187,7 @@ func TestValidateDoesNotRejectPlanMetadataForSensitiveJSONScalars(t *testing.T) 
 	} {
 		t.Run(name, func(t *testing.T) {
 			sensitive := ExtractSensitiveValues([]byte(source))
-			_, violations := Validate(candidate, []string{"F001", "F002"}, sensitive)
+			_, violations := Validate(candidate, []string{"F001", "F002"}, sensitive, English)
 			if containsViolation(violations, SensitiveOutput) {
 				t.Fatalf("metadata caused a sensitive match: %v", violations)
 			}
@@ -162,7 +208,7 @@ func TestValidateStillRejectsSensitiveJSONScalarsInSummary(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			sensitive := ExtractSensitiveValues([]byte(test.source))
 			candidate := []byte(`{"schema_version":1,"commits":[{"type":"fix","scope":"planner","breaking":true,"summary":"` + test.summary + `","file_ids":["F001","F002"]}]}`)
-			_, violations := Validate(candidate, []string{"F001", "F002"}, sensitive)
+			_, violations := Validate(candidate, []string{"F001", "F002"}, sensitive, English)
 			if !containsViolation(violations, SensitiveOutput) {
 				t.Fatalf("summary scalar was not detected: %v", violations)
 			}
@@ -306,6 +352,42 @@ func TestGeneratorKeepsSchemaForJapaneseSummary(t *testing.T) {
 	client := &scriptedChat{steps: []chatStep{{content: `{"schema_version":1,"commits":[{"type":"feat","scope":"planner","breaking":false,"summary":"コミット計画を生成する","file_ids":["F001","F002"]}]}`}}}
 	result, err := (Generator{Client: client}).Generate(context.Background(), preparedInput(t, Japanese), Japanese, SensitiveValues{})
 	if err != nil || result.Plan.SchemaVersion != SchemaVersion || result.Plan.Commits[0].Summary != "コミット計画を生成する" {
+		t.Fatalf("result=%#v error=%v", result, err)
+	}
+	if !strings.Contains(client.messages[0][0].Content, "summary_language") {
+		t.Fatalf("system message omitted summary language: %q", client.messages[0][0].Content)
+	}
+}
+
+func TestGeneratorRejectsEnglishOnlySummaryWhenJapaneseRequested(t *testing.T) {
+	english := validPlan()
+	client := &scriptedChat{steps: []chatStep{{content: english}, {content: english}}}
+	_, err := (Generator{Client: client}).Generate(context.Background(), preparedInput(t, Japanese), Japanese, SensitiveValues{})
+	if exitcode.Code(err) != exitcode.LLM || len(client.messages) != 2 {
+		t.Fatalf("error=%v code=%d calls=%d", err, exitcode.Code(err), len(client.messages))
+	}
+	if !strings.Contains(err.Error(), "violations: invalid_summary_language") {
+		t.Fatalf("error=%v", err)
+	}
+	if strings.Contains(err.Error(), "valid plan") {
+		t.Fatalf("error exposed candidate content: %v", err)
+	}
+	var repair struct {
+		Violations []Violation `json:"violations"`
+	}
+	if err := json.Unmarshal([]byte(client.messages[1][1].Content), &repair); err != nil {
+		t.Fatal(err)
+	}
+	if !containsViolation(repair.Violations, InvalidSummaryLanguage) {
+		t.Fatalf("repair payload=%#v", repair)
+	}
+}
+
+func TestGeneratorRepairsEnglishOnlySummaryToJapanese(t *testing.T) {
+	japanese := `{"schema_version":1,"commits":[{"type":"feat","scope":"planner","breaking":false,"summary":"CLIの設定を修正する","file_ids":["F001","F002"]}]}`
+	client := &scriptedChat{steps: []chatStep{{content: validPlan()}, {content: japanese}}}
+	result, err := (Generator{Client: client}).Generate(context.Background(), preparedInput(t, Japanese), Japanese, SensitiveValues{})
+	if err != nil || !result.Repaired || result.Plan.Commits[0].Summary != "CLIの設定を修正する" {
 		t.Fatalf("result=%#v error=%v", result, err)
 	}
 }

@@ -55,11 +55,12 @@ type Telemetry struct {
 type Violation string
 
 const (
-	InvalidJSON       Violation = "invalid_json"
-	InvalidSchema     Violation = "invalid_schema"
-	InvalidType       Violation = "invalid_type"
-	InvalidScope      Violation = "invalid_scope"
-	InvalidSummary    Violation = "invalid_summary"
-	InvalidAssignment Violation = "invalid_assignment"
-	SensitiveOutput   Violation = "sensitive_output"
+	InvalidJSON            Violation = "invalid_json"
+	InvalidSchema          Violation = "invalid_schema"
+	InvalidType            Violation = "invalid_type"
+	InvalidScope           Violation = "invalid_scope"
+	InvalidSummary         Violation = "invalid_summary"
+	InvalidSummaryLanguage Violation = "invalid_summary_language"
+	InvalidAssignment      Violation = "invalid_assignment"
+	SensitiveOutput        Violation = "sensitive_output"
 )
