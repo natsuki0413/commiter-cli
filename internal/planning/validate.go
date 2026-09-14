@@ -6,9 +6,10 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"unicode"
 )
 
-func Validate(candidate []byte, fileIDs []string, sensitive SensitiveValues) (Plan, []Violation) {
+func Validate(candidate []byte, fileIDs []string, sensitive SensitiveValues, language Language) (Plan, []Violation) {
 	violations := make([]Violation, 0, 4)
 	var plan Plan
 	if !json.Valid(candidate) {
@@ -53,6 +54,8 @@ func Validate(candidate []byte, fileIDs []string, sensitive SensitiveValues) (Pl
 		}
 		if !oneNonEmptyLine(commit.Summary) {
 			violations = append(violations, InvalidSummary)
+		} else if !summaryMatchesLanguage(commit.Summary, language) {
+			violations = append(violations, InvalidSummaryLanguage)
 		}
 		if len(commit.FileIDs) == 0 {
 			violations = append(violations, InvalidAssignment)
@@ -107,6 +110,35 @@ func requireEOF(decoder *json.Decoder) error {
 
 func oneNonEmptyLine(value string) bool {
 	return strings.TrimSpace(value) != "" && !strings.ContainsAny(value, "\r\n")
+}
+
+func summaryMatchesLanguage(summary string, language Language) bool {
+	switch language {
+	case Japanese:
+		return containsJapaneseScript(summary)
+	case English:
+		return containsLatinLetter(summary) && !containsJapaneseScript(summary)
+	default:
+		return false
+	}
+}
+
+func containsJapaneseScript(value string) bool {
+	for _, r := range value {
+		if unicode.In(r, unicode.Hiragana, unicode.Katakana, unicode.Han) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsLatinLetter(value string) bool {
+	for _, r := range value {
+		if unicode.Is(unicode.Latin, r) {
+			return true
+		}
+	}
+	return false
 }
 
 func completeAssignment(plan Plan, fileIDs []string) bool {

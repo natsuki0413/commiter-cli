@@ -34,8 +34,15 @@ func NewConstraints(language Language, fileIDs []string) (Constraints, error) {
 		Assignment:     "assign every required_file_id to exactly one commit; do not invent IDs or split a file",
 		Grouping:       "infer purpose from actual change content; preserve every legal grouping and order returned by the model",
 		OpaqueGrouping: "only opaque files may use path, status, size, type, and other metadata as supporting grouping evidence",
-		Summary:        "write one non-empty line with no commit body",
+		Summary:        summaryConstraint(language),
 	}, nil
+}
+
+func summaryConstraint(language Language) string {
+	if language == Japanese {
+		return "write one non-empty Japanese line with no commit body; Latin technical terms are allowed; English-only summaries are invalid"
+	}
+	return "write one non-empty English line with no commit body"
 }
 
 func ConstraintsJSON(language Language, fileIDs []string) ([]byte, error) {
