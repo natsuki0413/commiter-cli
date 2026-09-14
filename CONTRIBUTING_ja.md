@@ -13,9 +13,36 @@
 - [ソフトウェア要求仕様書 (日本語)](SOFTWARE_REQUIREMENTS_SPECIFICATION.md)
 - [Software Requirements Specification (English)](SOFTWARE_REQUIREMENTS_SPECIFICATION_en.md)
 
+Issue や Pull Request を作成する前に、既存の Issue と SRS を確認してください。大きな仕様変更や設計判断が必要な場合は、先に Issue で相談してください。
+
 v1 の主対象は macOS 14 以降の Apple Silicon です。CLI は主に Go で実装し、実行時には system Git と Ollama を使用します。
 
 FR、SR、NFR、AC のいずれかで定義された挙動を変更する場合は、同じ Pull Request で該当する仕様本文と受入条件も更新してください。英語版と日本語版の SRS は内容を一致させてください。
+
+## Issue
+
+### Issue labels
+
+主種別ラベルは原則1つ付与します。
+
+- `enhancement`: 新機能・実装・改善
+- `bug`: 不具合修正
+- `documentation`: 文書の追加・変更
+
+必要な場合だけ、主種別に加えて次の補助ラベルを付与します。
+
+- `good first issue`: 初参加者でも取り組みやすい Issue
+- `help wanted`: 外部コントリビューターの協力を募集する Issue
+
+主種別を判断できない場合は、無理にラベルを付与しません。ラベルの新設や既存ラベルの大幅な変更は、Issue で運用方針を確認してから行います。
+
+### Issue templates
+
+- Feature / Enhancement: 新機能や改善の提案
+- Bug report: 不具合の報告
+- Documentation: 文書の追加・修正
+
+SRS から生成する Implementation Issue は、対応する要件、依存、成功・失敗条件、実装方針、検証条件を本文に記載します。Decision、Design、Verification は、それぞれの目的と成果に応じた内容を記載します。一般の起票では、テンプレートの項目を埋められる範囲で具体的に記載してください。
 
 ## 開発環境
 
@@ -46,7 +73,7 @@ go build ./cmd/commiter
 
 ## 変更の作成
 
-最新の `main` から目的ごとの branch を作成し、1つの Pull Request は1つの一貫した目的に限定してください。
+最新の `main` から目的ごとの branch を作成し、1つの Pull Request は1つの一貫した目的に限定してください。原則として、1つの Pull Request は1つの Issue に対応させます。
 
 既存の package 境界に沿った小さな変更を優先してください。要求された挙動に不要なリファクタリング、フォーマットだけの大規模差分、不要な依存追加は避けてください。
 
@@ -106,7 +133,8 @@ Pull Request には以下を含めてください。
 - 必要な test と documentation update
 - 実行した validation command
 - 該当する場合は security または Git state への影響
-- 対応する Issue がある場合はそのリンク
+- 対応する Issue がある場合はその参照
+- review で仕様が変わる場合は、Issue と SRS の整合確認
 
 Pull Request で Issue を完全に解決する場合は、次のような自動 close keyword を含めてください。
 
@@ -131,4 +159,6 @@ test(safety): cover sensitive-file exclusion
 
 ## License と Conduct
 
-コントリビューション時は、リポジトリで現在公開されている project policy と GitHub の platform rule に従ってください。今後 dedicated license、code of conduct、security policy が追加された場合、それぞれの対象については各文書を優先します。
+コントリビューションは、このリポジトリに適用される [MIT License](LICENSE) の下で提供されるものとします。
+
+すべての参加者は [Code of Conduct](CODE_OF_CONDUCT.md) に従ってください。セキュリティ脆弱性は公開 Issue や Discussion ではなく、[Security Policy](SECURITY.md) に従って報告してください。
