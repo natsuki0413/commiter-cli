@@ -161,4 +161,4 @@ test(safety): cover sensitive-file exclusion
 
 コントリビューションは、このリポジトリに適用される [MIT License](LICENSE) の下で提供されるものとします。
 
-すべての参加者は [Code of Conduct](CODE_OF_CONDUCT.md) に従ってください。セキュリティ脆弱性は公開 Issue や Discussion ではなく、[Security Policy](SECURITY.md) に従って報告してください。
+すべての参加者は [Code of Conduct (行動規範)](CODE_OF_CONDUCT_ja.md) に従ってください。セキュリティ脆弱性は公開 Issue や Discussion ではなく、[Security Policy](SECURITY.md) に従って報告してください。
