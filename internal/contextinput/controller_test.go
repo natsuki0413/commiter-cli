@@ -31,6 +31,54 @@ func TestPrepareUsesSmallestContextWithoutSummary(t *testing.T) {
 	}
 }
 
+func TestPrepareSelectsContextUsingPromptOverhead(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		promptSize int
+		want       int
+	}{
+		{name: "8k plus overhead", promptSize: Context8K - TemplateReserve - MinimumOutputSpace, want: Context16K},
+		{name: "16k plus overhead", promptSize: Context16K - TemplateReserve - MinimumOutputSpace, want: Context32K},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			prepared, err := Prepare(context.Background(), testDocument(), BudgetConfig{
+				Context: "auto", MaxContextTokens: Context32K, PromptOverheadBytes: 1,
+			}, func(Document) ([]byte, error) {
+				return make([]byte, test.promptSize), nil
+			}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if prepared.Budget.ContextTokens != test.want || prepared.SummaryStage != SummaryNone {
+				t.Fatalf("prepared=%#v", prepared)
+			}
+		})
+	}
+}
+
+func TestPrepareSummarizesFixedContextWhenPromptOverheadDoesNotFit(t *testing.T) {
+	stages := []SummaryStage{}
+	prepared, err := Prepare(context.Background(), testDocument(), BudgetConfig{
+		Context: "8k", MaxContextTokens: Context32K, PromptOverheadBytes: 1,
+	}, func(document Document) ([]byte, error) {
+		if document.Files[0].Summary == "file" {
+			return []byte("fits"), nil
+		}
+		return make([]byte, Context8K-TemplateReserve-MinimumOutputSpace), nil
+	}, summarizeFunc(func(_ context.Context, stage SummaryStage, document Document) (Document, error) {
+		stages = append(stages, stage)
+		document.Files[0].RawDiff = ""
+		document.Files[0].Summary = string(stage)
+		return document, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(stages, []SummaryStage{SummaryFile}) || prepared.SummaryStage != SummaryFile || prepared.SummaryCount != 1 {
+		t.Fatalf("stages=%v prepared=%#v", stages, prepared)
+	}
+}
+
 func TestPrepareSummarizesInFileHunkChunkOrder(t *testing.T) {
 	document := testDocument()
 	stages := []SummaryStage{}

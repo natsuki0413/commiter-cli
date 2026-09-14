@@ -308,6 +308,21 @@ func TestGeneratorPassesPreparedContextAndOutputLimitToInitialAndRepair(t *testi
 	}
 }
 
+func TestGeneratorIncludesFormatSchemaInInitialSystemMessage(t *testing.T) {
+	client := &scriptedChat{steps: []chatStep{{content: validPlan()}}}
+	prepared := preparedInput(t, English)
+	if _, err := (Generator{Client: client}).Generate(context.Background(), prepared, English, SensitiveValues{}); err != nil {
+		t.Fatal(err)
+	}
+	schema, err := Schema([]string{"F001", "F002"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(client.messages) != 1 || !strings.Contains(client.messages[0][0].Content, schemaInstructionPrefix+string(schema)) {
+		t.Fatalf("initial system message omitted the format schema")
+	}
+}
+
 func TestGeneratorStopsAtThreeCallsAndNeverRepairsTwice(t *testing.T) {
 	invalid := `{"schema_version":1,"commits":[]}`
 	for name, test := range map[string]struct {
