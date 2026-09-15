@@ -136,10 +136,11 @@ func runSetup(args []string, printer *output.Printer) int {
 		return fail(printer, err)
 	}
 	defer runtime.Close()
-	present, err := runtime.Client.HasModel(context.Background())
+	modelInfo, err := runtime.Client.ModelInfo(context.Background())
 	if err != nil {
 		return fail(printer, err)
 	}
+	present := modelInfo.Installed
 	if present && !update {
 		return finishSetup(printer, "Ollama is ready; model is already installed")
 	}
@@ -147,6 +148,9 @@ func runSetup(args []string, printer *output.Printer) int {
 		update = true
 	}
 	if update {
+		if err := printModelUpdateDetails(printer, effective.Values.Model, modelInfo); err != nil {
+			return fail(printer, exitcode.New(exitcode.Internal, "cannot write output"))
+		}
 		if !confirm(fmt.Sprintf("Pull/update model %s? [y/N] ", output.Escape(effective.Values.Model))) {
 			return finishSetup(printer, "setup canceled; model was not changed")
 		}
@@ -156,6 +160,45 @@ func runSetup(args []string, printer *output.Printer) int {
 		return finishSetup(printer, "Ollama setup completed")
 	}
 	return finishSetup(printer, "Ollama is ready")
+}
+
+func printModelUpdateDetails(printer *output.Printer, configuredModel string, info ollama.ModelInfo) error {
+	lines := []string{
+		"Model update details",
+		"configured model: " + configuredModel,
+	}
+	if !info.Installed {
+		lines = append(lines,
+			"installed: no",
+			"operation: download the configured model from its registry after approval",
+		)
+	} else {
+		lines = append(lines, "installed: yes")
+		if info.Name != "" {
+			lines = append(lines, "installed model: "+info.Name)
+		}
+		if info.Digest != "" {
+			lines = append(lines, "local digest: "+info.Digest)
+		}
+		if info.ModifiedAt != "" {
+			lines = append(lines, "local modified at: "+info.ModifiedAt)
+		}
+		if info.Size > 0 {
+			lines = append(lines, fmt.Sprintf("local size: %d bytes", info.Size))
+		}
+		if info.Format != "" {
+			lines = append(lines, "format: "+info.Format)
+		}
+		if info.ParameterSize != "" {
+			lines = append(lines, "parameter size: "+info.ParameterSize)
+		}
+		if info.QuantizationLevel != "" {
+			lines = append(lines, "quantization: "+info.QuantizationLevel)
+		}
+		lines = append(lines, "operation: refresh the configured model tag from its registry after approval")
+	}
+	lines = append(lines, "remote changes and download size: reported by Ollama only after pull starts")
+	return printer.PromptLines(lines...)
 }
 
 func installedOllamaExecutable() string {

@@ -51,6 +51,19 @@ type CapabilityResult struct {
 	ThinkingDisabled bool
 }
 
+// ModelInfo contains the installed model metadata exposed by Ollama's local
+// list API. Remote changes are not available until Ollama starts a pull.
+type ModelInfo struct {
+	Installed         bool
+	Name              string
+	Digest            string
+	ModifiedAt        string
+	Size              int64
+	Format            string
+	ParameterSize     string
+	QuantizationLevel string
+}
+
 type Client struct {
 	endpoint *url.URL
 	model    string
@@ -217,21 +230,47 @@ func parseVersion(raw string) (semanticVersion, bool) {
 }
 
 func (c *Client) HasModel(ctx context.Context) (bool, error) {
+	info, err := c.ModelInfo(ctx)
+	return info.Installed, err
+}
+
+// ModelInfo returns the configured model's installed metadata without pulling
+// or otherwise changing model state.
+func (c *Client) ModelInfo(ctx context.Context) (ModelInfo, error) {
 	var response struct {
 		Models []struct {
-			Name  string `json:"name"`
-			Model string `json:"model"`
+			Name       string `json:"name"`
+			Model      string `json:"model"`
+			Digest     string `json:"digest"`
+			ModifiedAt string `json:"modified_at"`
+			Size       int64  `json:"size"`
+			Details    struct {
+				Format            string `json:"format"`
+				ParameterSize     string `json:"parameter_size"`
+				QuantizationLevel string `json:"quantization_level"`
+			} `json:"details"`
 		} `json:"models"`
 	}
 	if err := c.get(ctx, "/api/tags", &response); err != nil {
-		return false, err
+		return ModelInfo{}, err
 	}
 	for _, installed := range response.Models {
 		if modelMatches(c.model, installed.Name) || modelMatches(c.model, installed.Model) {
-			return true, nil
+			name := installed.Model
+			if name == "" {
+				name = installed.Name
+			}
+			return ModelInfo{
+				Installed: true,
+				Name:      name, Digest: installed.Digest,
+				ModifiedAt: installed.ModifiedAt, Size: installed.Size,
+				Format:            installed.Details.Format,
+				ParameterSize:     installed.Details.ParameterSize,
+				QuantizationLevel: installed.Details.QuantizationLevel,
+			}, nil
 		}
 	}
-	return false, nil
+	return ModelInfo{}, nil
 }
 
 func modelMatches(configured, installed string) bool {
