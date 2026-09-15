@@ -187,8 +187,8 @@ commiter config show --effective
 | `llm.endpoint` | `"http://127.0.0.1:11434"` |
 | `llm.context` | `"auto"` |
 | `llm.max_context_tokens` | `32768` |
-| `verification.autodetect` | repository 設定で `true` |
-| `verification.timeout_seconds` | repository 設定で `600` |
+| `verification.autodetect` | `true` |
+| `verification.timeout_seconds` | `600` |
 | `metrics.persist` | `false` |
 
 Ollama endpoint は loopback HTTP URL である必要があります。verification 設定は repository scope のみで、global 設定には記述できません。
