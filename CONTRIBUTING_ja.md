@@ -55,7 +55,7 @@ SRS から生成する Implementation Issue は、対応する要件、依存、
 リポジトリを clone し、依存関係を取得します。
 
 ```sh
-git clone https://github.com/natsuki0413/commiter-cli.git
+git clone https://github.com/neural-int/commiter-cli.git
 cd commiter-cli
 go mod download
 ```
