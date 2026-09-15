@@ -52,7 +52,7 @@ v1 の対象環境は次のとおりです。
 - macOS 14 以降
 - Apple Silicon
 - Git
-- Ollama
+- Ollama 0.31.2 以降
 
 現在のソースビルドによる導入では、さらに次が必要です。
 
@@ -105,6 +105,8 @@ commiter [flags] [--] [pathspec...]
 ```
 
 pathspec を指定しない場合、`HEAD` から working tree までの tracked change と、安全性チェックを通過した untracked file が対象候補になります。Git pathspec を指定すると処理対象を限定できます。
+
+tracked file は `HEAD` から最終的な working tree までをファイル単位で扱います。staged / unstaged の境界は対象範囲を制限しません。partially staged な tracked file がコミット対象に選ばれた場合、staged 部分だけではなく、そのファイルの変更全体を `commiter` がコミットします。
 
 例:
 
@@ -221,6 +223,10 @@ Ollama endpoint は loopback HTTP URL である必要があります。verificat
 - Git hook は通常どおり実行され、`--no-verify` で回避しません。
 - recovery のために reset、stash、amend、force push、automatic rollback を利用しません。
 - 無効または安全条件を満たさないモデル出力から直接 Git を変更することはありません。
+
+### push の挙動
+
+push は通常の Git semantics に従います。現在の branch に今回の `commiter` 実行より前から存在する outgoing commit がある場合、それらも同じ push に含まれる可能性があります。実行前から存在する outgoing commit は、今回の実行では再解析されず、機密ファイル分類の対象にもなりません。
 
 永続 metrics は既定で無効です。有効化した場合もローカル記録であり、リポジトリパス、メッセージ、diff、prompt、ユーザー feedback、機密値を記録することを意図していません。
 
