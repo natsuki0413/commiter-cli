@@ -52,7 +52,7 @@ The v1 target environment is:
 - macOS 14 or later
 - Apple Silicon
 - Git
-- Ollama
+- Ollama 0.31.2 or later
 
 For the current source-build installation path, you also need:
 
@@ -105,6 +105,8 @@ commiter [flags] [--] [pathspec...]
 ```
 
 With no pathspec, `commiter` considers tracked changes from `HEAD` through the working tree plus untracked files that pass its safety checks. Git pathspecs can limit the target scope.
+
+Tracked files are handled at file granularity from `HEAD` to the final working-tree state. Staged and unstaged boundaries do not limit the target: if a tracked file is partially staged and selected for a commit, `commiter` includes that file's complete change rather than only its staged portion.
 
 Examples:
 
@@ -221,6 +223,10 @@ This boundary does not mean every child process is offline: user-approved Git pu
 - Git hooks are respected; `commiter` does not bypass them with `--no-verify`.
 - `commiter` does not use reset, stash, amend, force push, or automatic rollback as recovery shortcuts.
 - Invalid or unsafe model output cannot directly mutate Git.
+
+### Push behavior
+
+Push follows normal Git semantics. If the current branch already contains outgoing commits created before the current `commiter` run, those commits may be included in the same push. Pre-existing outgoing commits are not re-analyzed or sensitive-classified by the current run.
 
 Persistent metrics are disabled by default. When enabled, they are local records and are not intended to contain repository paths, messages, diffs, prompts, user feedback, or sensitive values.
 
