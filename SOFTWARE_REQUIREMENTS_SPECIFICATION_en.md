@@ -323,6 +323,10 @@ Normal execution must not pull or update models.
 
 `setup --update-model` must update a model only after displaying the update and obtaining explicit confirmation.
 
+Ollama's public local API does not provide remote differences before a pull starts. When the target model is installed, the displayed update details are the current local model tag, digest, size, modification time, format, parameter size, and quantization level retrieved from `/api/tags`, together with the update operation that will run after approval.
+
+The CLI must state that remote differences and download size are known only after the pull starts, and must not call `/api/pull` before confirmation.
+
 setup must reuse an existing official Ollama App or CLI. If Ollama is not installed and Homebrew is available, setup must separately prompt for Ollama installation, daemon startup, and model download.
 
 setup must not install Homebrew itself.

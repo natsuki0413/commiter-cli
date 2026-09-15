@@ -188,7 +188,7 @@ func TestSetupUpdateModelPullsOnlyAfterApproval(t *testing.T) {
 		case "/api/version":
 			_, _ = io.WriteString(w, `{"version":"0.31.2"}`)
 		case "/api/tags":
-			_, _ = io.WriteString(w, `{"models":[{"name":"qwen3.5:4b-q4_K_M"}]}`)
+			_, _ = io.WriteString(w, `{"models":[{"name":"qwen3.5:4b-q4_K_M","model":"qwen3.5:4b-q4_K_M","modified_at":"2026-09-09T13:47:35+09:00","size":3389983735,"digest":"abc123","details":{"format":"gguf","parameter_size":"4.7B","quantization_level":"Q4_K_M"}}]}`)
 		case "/api/pull":
 			pulled = true
 			_, _ = io.WriteString(w, `{"status":"success"}`)
@@ -221,6 +221,52 @@ func TestSetupUpdateModelPullsOnlyAfterApproval(t *testing.T) {
 	}
 	if !promptDisplayed || !pulled {
 		t.Fatalf("promptDisplayed=%v pulled=%v", promptDisplayed, pulled)
+	}
+	for _, expected := range []string{
+		"Model update details", "configured model: qwen3.5:4b-q4_K_M",
+		"installed: yes", "local digest: abc123", "local modified at: 2026-09-09T13:47:35+09:00",
+		"local size: 3389983735 bytes", "format: gguf", "parameter size: 4.7B", "quantization: Q4_K_M",
+		"operation: refresh the configured model tag from its registry after approval",
+		"remote changes and download size: reported by Ollama only after pull starts",
+	} {
+		if !strings.Contains(stdout.String(), expected) {
+			t.Fatalf("stdout does not contain %q: %q", expected, stdout.String())
+		}
+	}
+}
+
+func TestSetupUpdateModelRejectsAfterDetailsWithoutPull(t *testing.T) {
+	pullCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/version":
+			_, _ = io.WriteString(w, `{"version":"0.31.2"}`)
+		case "/api/tags":
+			_, _ = io.WriteString(w, `{"models":[{"name":"qwen3.5:4b-q4_K_M","digest":"abc123","size":42}]}`)
+		case "/api/pull":
+			pullCalls++
+			_, _ = io.WriteString(w, `{"status":"success"}`)
+		default:
+			http.NotFound(w, request)
+		}
+	}))
+	defer server.Close()
+	writeOllamaConfig(t, server.URL, "qwen3.5:4b-q4_K_M")
+	oldLookPath, oldConfirm := lookPath, confirmFunc
+	t.Cleanup(func() { lookPath, confirmFunc = oldLookPath, oldConfirm })
+	lookPath = func(name string) (string, error) { return "/" + name, nil }
+	detailsWereShown := false
+	var stdout bytes.Buffer
+	confirmFunc = func(string) bool {
+		detailsWereShown = strings.Contains(stdout.String(), "local digest: abc123")
+		return false
+	}
+
+	if code := Run([]string{"setup", "--update-model"}, &stdout, io.Discard); code != 0 {
+		t.Fatalf("code=%d stdout=%q", code, stdout.String())
+	}
+	if !detailsWereShown || pullCalls != 0 {
+		t.Fatalf("detailsWereShown=%v pullCalls=%d stdout=%q", detailsWereShown, pullCalls, stdout.String())
 	}
 }
 

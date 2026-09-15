@@ -236,6 +236,29 @@ func TestCompatibilityAndModelFailuresAreLLMErrorsWithoutPull(t *testing.T) {
 	}
 }
 
+func TestModelInfoReturnsInstalledMetadataWithoutPull(t *testing.T) {
+	paths := []string{}
+	client := testClient(roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		paths = append(paths, request.URL.Path)
+		return jsonResponse(http.StatusOK, `{"models":[{"name":"model:latest","model":"model:latest","modified_at":"2026-09-09T13:47:35+09:00","size":3389983735,"digest":"abc123","details":{"format":"gguf","parameter_size":"4.7B","quantization_level":"Q4_K_M"}}]}`), nil
+	}))
+
+	info, err := client.ModelInfo(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info != (ModelInfo{
+		Installed: true, Name: "model:latest", Digest: "abc123",
+		ModifiedAt: "2026-09-09T13:47:35+09:00", Size: 3389983735,
+		Format: "gguf", ParameterSize: "4.7B", QuantizationLevel: "Q4_K_M",
+	}) {
+		t.Fatalf("ModelInfo() = %#v", info)
+	}
+	if len(paths) != 1 || paths[0] != "/api/tags" {
+		t.Fatalf("paths = %v", paths)
+	}
+}
+
 func TestPullUsesConfiguredModelAndNonStreamingRequest(t *testing.T) {
 	var received map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
