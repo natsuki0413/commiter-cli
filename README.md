@@ -187,8 +187,8 @@ Important defaults include:
 | `llm.endpoint` | `"http://127.0.0.1:11434"` |
 | `llm.context` | `"auto"` |
 | `llm.max_context_tokens` | `32768` |
-| `verification.autodetect` | `true` in repository configuration |
-| `verification.timeout_seconds` | `600` in repository configuration |
+| `verification.autodetect` | `true` |
+| `verification.timeout_seconds` | `600` |
 | `metrics.persist` | `false` |
 
 The Ollama endpoint must be a loopback HTTP URL. Verification configuration is repository-scoped and cannot be configured globally.
